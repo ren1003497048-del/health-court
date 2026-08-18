@@ -43,25 +43,56 @@ export function App(): React.ReactElement {
   const logSinkRef = useRef<(stage: string, note: string) => void>(() => {});
   const lastTranscribeErrorRef = useRef<string | null>(null);
   const tryTranscribe = async (cf: CaseFile, rt: any, s: any): Promise<boolean> => {
+    /** 网络步骤打点：任何一层失败都能定位到具体环节 */
+    const netErr = (step: string, e: any): string => {
+      const raw = String(e?.message || e || '网络请求失败');
+      const isTimeout = /timeout|abort/i.test(raw);
+      const isCors = /cors|failed to fetch|networkerror|load failed/i.test(raw);
+      const hint = isTimeout
+        ? '（连接超时——当前网络可能无法直连该服务，尝试更换网络或开启代理后重试）'
+        : isCors
+          ? '（连接被拒——多半是网络拦截，尝试更换网络或开启代理后重试）'
+          : '';
+      return `[${step}] ${raw.slice(0, 120)}${hint}`;
+    };
     try {
       const { itunesLookupEpisode, transcribeAudio } = await import('../providers/multi');
       const { transcribeAudioUrl } = await import('../pipeline/transcribe');
       let audioUrl = '';
       let meta: any = null;
       if (/podcasts\.apple\.com/.test(cf.input.url || '')) {
-        meta = await itunesLookupEpisode(cf.input.url!);
+        try {
+          meta = await itunesLookupEpisode(cf.input.url!);
+        } catch (e: any) {
+          lastTranscribeErrorRef.current = netErr('查询 iTunes 音频目录', e);
+          logSinkRef.current('立案', lastTranscribeErrorRef.current);
+          return false;
+        }
         audioUrl = meta?.enclosureUrl || '';
         if (meta?.podcastName) cf.target.author = cf.target.author || meta.podcastName;
         if (meta?.releaseDate) cf.target.date = cf.target.date || meta.releaseDate.slice(0, 10);
+        if (!audioUrl) {
+          lastTranscribeErrorRef.current = 'iTunes 目录中未找到该单集的音频地址（单集可能已下架或地区限制）';
+          return false;
+        }
       } else if (/xiaoyuzhoufm\.com\/episode/.test(cf.input.url || '')) {
         // 小宇宙：单集页 HTML 内嵌音频 CDN 地址（media.xyzcdn.net，CORS 开放）
         logSinkRef.current('立案', '小宇宙单集：从页面定位音频地址…');
-        const html = await (await fetch(cf.input.url!, { headers: { Accept: 'text/html' } })).text();
-        const m = html.match(/https:\/\/media\.xyzcdn\.net\/[^"']+\.m4a/) || html.match(/https:\/\/[^"']+\.m4a/);
-        audioUrl = m ? m[0] : '';
-        const pm = html.match(/"podcast":\s*\{[^}]*?"title":\s*"([^"]{2,40})"/) || html.match(/<title>([^<]{2,40})<\/title>/);
-        if (pm) cf.target.author = cf.target.author || pm[1];
-        if (!audioUrl) logSinkRef.current('立案', '小宇宙页面未内嵌音频地址');
+        try {
+          const html = await (await fetch(cf.input.url!, { headers: { Accept: 'text/html' } })).text();
+          const m = html.match(/https:\/\/media\.xyzcdn\.net\/[^"']+\.m4a/) || html.match(/https:\/\/[^"']+\.m4a/);
+          audioUrl = m ? m[0] : '';
+          const pm = html.match(/"podcast":\s*\{[^}]*?"title":\s*"([^"]{2,40})"/) || html.match(/<title>([^<]{2,40})<\/title>/);
+          if (pm) cf.target.author = cf.target.author || pm[1];
+        } catch (e: any) {
+          lastTranscribeErrorRef.current = netErr('抓取小宇宙页面', e);
+          logSinkRef.current('立案', lastTranscribeErrorRef.current);
+          return false;
+        }
+        if (!audioUrl) {
+          lastTranscribeErrorRef.current = '小宇宙页面未内嵌音频地址';
+          logSinkRef.current('立案', '小宇宙页面未内嵌音频地址');
+        }
       }
       if (!audioUrl) {
         lastTranscribeErrorRef.current = '未能定位音频地址（当前支持 Apple Podcasts 与小宇宙单集链接）';
@@ -88,8 +119,11 @@ export function App(): React.ReactElement {
       logSinkRef.current('立案', `转录完成：${fullText.length} 字符，${segments.length} 段`);
       return true;
     } catch (e: any) {
-      lastTranscribeErrorRef.current = String(e.message).slice(0, 160);
-      logSinkRef.current('立案', `自动转录失败：${String(e.message).slice(0, 120)}`);
+      const raw = String(e?.message || e);
+      // 阶段归因：transcribeAudioUrl 内部的 fetch失败=音频下载；ASR 上传失败含 asr()
+      const step = /asr\(/i.test(raw) ? '上传转录服务' : /fetch|failed/i.test(raw) && raw.includes('audio') ? '下载音频' : '浏览器转录';
+      lastTranscribeErrorRef.current = netErr(step, e);
+      logSinkRef.current('立案', `自动转录失败：${lastTranscribeErrorRef.current}`);
       return false;
     }
   };
@@ -172,6 +206,12 @@ export function App(): React.ReactElement {
         if (e && e.preReviewFail) {
           setMentalHygiene(e.failNote || '');
           throw new Error('__MENTAL_HYGIENE__');
+        }
+        const raw = String(e?.message || e);
+        if (/fetch|network|timeout|abort|cors/i.test(raw)) {
+          setError(`取证失败：无法访问该链接（${raw.slice(0, 100)}）。当前网络可能无法直达该站点，可尝试更换网络、开启代理，或改用「粘贴正文」方式提交。`);
+          setRunning(null);
+          return;
         }
         throw e;
       }
