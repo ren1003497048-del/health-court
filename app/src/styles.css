@@ -1,0 +1,396 @@
+/* 卫生法庭 · 漫画法庭样式（设计公理：明亮漫画，禁暗色赛博/霓虹渐变）
+   CJK 排版规则：全角标点、无中文斜体、Noto SC 字体栈、line-height ≥ 1.7 */
+
+:root {
+  --paper: #faf6ee;
+  --paper-2: #f3ecdd;
+  --ink: #1c1a17;
+  --ink-soft: #57503f;
+  --vermillion: #d93a2b;
+  --vermillion-deep: #b0271a;
+  --gold: #e8b93e;
+  --green: #3e7c4f;
+  --blue: #2b5cad;
+  --shadow: 6px 6px 0 rgba(28, 26, 23, 0.9);
+  --shadow-sm: 3px 3px 0 rgba(28, 26, 23, 0.9);
+  --border: 3px solid var(--ink);
+  --serif: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
+  --sans: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { min-height: 100%; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(232, 185, 62, 0.14), transparent 42%),
+    radial-gradient(circle at 88% 92%, rgba(217, 58, 43, 0.08), transparent 40%),
+    var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.75;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- 页首：法庭招牌 ---------- */
+.court-header {
+  border-bottom: var(--border);
+  background: #fff;
+  padding: 18px 20px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+.court-header-inner {
+  max-width: 1060px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.logo-block { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.logo-cn {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: 30px;
+  letter-spacing: 0.08em;
+  position: relative;
+}
+.logo-cn .typo-mark { color: var(--vermillion); }
+.logo-en {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink-soft);
+  letter-spacing: 0.14em;
+}
+.nav-tabs { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.nav-tab {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 15px;
+  padding: 6px 14px;
+  border: var(--border);
+  background: #fff;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.06s ease;
+}
+.nav-tab:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(28,26,23,.9); }
+.nav-tab.active { background: var(--ink); color: #fff; }
+.naming-footnote-mini {
+  max-width: 1060px;
+  margin: 8px auto 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+.naming-footnote-mini .typo-mark { color: var(--vermillion); font-weight: 700; }
+
+main { max-width: 1060px; margin: 0 auto; padding: 26px 20px 80px; }
+
+/* ---------- 漫画面板 ---------- */
+.panel {
+  border: var(--border);
+  background: #fff;
+  box-shadow: var(--shadow);
+  padding: 22px 24px;
+  margin-bottom: 26px;
+  position: relative;
+}
+.panel-title {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: 22px;
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.panel-title::before {
+  content: '';
+  display: inline-block;
+  width: 14px; height: 14px;
+  background: var(--vermillion);
+  border: 2.5px solid var(--ink);
+  transform: rotate(45deg);
+  flex: none;
+}
+
+/* ---------- 输入区 ---------- */
+.input-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.input-main {
+  flex: 1 1 420px;
+  font-family: var(--sans);
+  font-size: 16px;
+  padding: 12px 14px;
+  border: var(--border);
+  background: #fff;
+  box-shadow: inset 2px 2px 0 rgba(28,26,23,.08);
+}
+textarea.input-main { min-height: 130px; resize: vertical; line-height: 1.7; }
+.btn {
+  font-family: var(--sans);
+  font-weight: 900;
+  font-size: 17px;
+  padding: 12px 26px;
+  border: var(--border);
+  background: var(--gold);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.06s ease;
+  letter-spacing: 0.1em;
+}
+.btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(28,26,23,.9); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-red { background: var(--vermillion); color: #fff; }
+.btn-ghost { background: #fff; font-weight: 700; font-size: 14px; }
+.hint { font-size: 13px; color: var(--ink-soft); margin-top: 8px; line-height: 1.7; }
+
+/* ---------- 庭审进度 ---------- */
+.stage-bar { display: flex; gap: 0; flex-wrap: wrap; margin-bottom: 18px; }
+.stage-chip {
+  flex: 1 1 120px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 8px 6px;
+  border: var(--border);
+  border-left: none;
+  background: var(--paper-2);
+  color: var(--ink-soft);
+  letter-spacing: 0.15em;
+}
+.stage-chip:first-child { border-left: var(--border); }
+.stage-chip.done { background: var(--ink); color: #fff; }
+.stage-chip.current {
+  background: var(--gold);
+  color: var(--ink);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.18); } }
+
+/* 庭审记录（终端式滚动） */
+.court-log {
+  border: var(--border);
+  background: #fffdf5;
+  font-size: 13.5px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 12px 16px;
+  line-height: 1.85;
+}
+.court-log .stage-tag {
+  font-weight: 900;
+  color: var(--vermillion-deep);
+  margin-right: 8px;
+}
+.court-log .log-line { border-bottom: 1px dashed rgba(28,26,23,.15); padding: 2px 0; }
+
+/* 集中线背景（宣判时给面板用） */
+.focus-lines {
+  background-image: repeating-conic-gradient(
+    from 0deg at 50% 42%,
+    rgba(28, 26, 23, 0.05) 0deg 4deg,
+    transparent 4deg 9deg
+  );
+}
+
+/* ---------- 异议！ ---------- */
+.objection-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: objection-bg 0.18s ease-out;
+}
+@keyframes objection-bg { from { opacity: 0; } to { opacity: 1; } }
+.objection-text {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: clamp(64px, 14vw, 160px);
+  color: var(--vermillion);
+  -webkit-text-stroke: 4px var(--ink);
+  paint-order: stroke fill;
+  transform: rotate(-7deg);
+  letter-spacing: 0.04em;
+  animation: objection-in 0.28s cubic-bezier(0.2, 2.2, 0.4, 1);
+  text-shadow: 8px 8px 0 rgba(28, 26, 23, 0.25);
+}
+@keyframes objection-in {
+  0% { transform: rotate(-7deg) scale(3.2); opacity: 0; }
+  60% { transform: rotate(-7deg) scale(0.92); opacity: 1; }
+  100% { transform: rotate(-7deg) scale(1); }
+}
+.shake { animation: shake 0.35s ease-in-out 2; }
+@keyframes shake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-7px, 4px); }
+  40% { transform: translate(6px, -5px); }
+  60% { transform: translate(-5px, -3px); }
+  80% { transform: translate(4px, 5px); }
+}
+
+/* ---------- 证物牌 ---------- */
+.evidence-card {
+  border: var(--border);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.evidence-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.evidence-level {
+  font-weight: 900;
+  font-size: 13px;
+  padding: 2px 10px;
+  border: 2.5px solid var(--ink);
+  letter-spacing: 0.1em;
+}
+.evidence-level.E4 { background: var(--vermillion); color: #fff; }
+.evidence-level.E3 { background: var(--gold); }
+.evidence-level.E2 { background: #cfe3d4; }
+.evidence-level.E1, .evidence-level.E5 { background: #e8e4d8; }
+.evidence-id { font-size: 12.5px; color: var(--ink-soft); font-weight: 700; }
+.quote-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+@media (max-width: 720px) { .quote-pair { grid-template-columns: 1fr; } }
+.quote-box {
+  border: 2.5px solid var(--ink);
+  background: var(--paper-2);
+  padding: 10px 12px;
+  font-size: 13.5px;
+  line-height: 1.8;
+}
+.quote-box .quote-label {
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  display: block;
+  margin-bottom: 4px;
+}
+.quote-box.target .quote-label { color: var(--blue); }
+.quote-box.source .quote-label { color: var(--vermillion-deep); }
+.unlocated {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--vermillion-deep);
+  border: 2px solid var(--vermillion-deep);
+  padding: 0 6px;
+  margin-left: 6px;
+}
+
+/* ---------- 判决印章 ---------- */
+.verdict-stage-panel { text-align: center; padding: 40px 24px 34px; }
+.verdict-word {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: clamp(44px, 8vw, 84px);
+  letter-spacing: 0.14em;
+  margin: 18px 0 8px;
+}
+.verdict-word.不卫生 { color: var(--vermillion); }
+.verdict-word.可能不卫生 { color: #b07a1e; }
+.verdict-word.卫生 { color: var(--green); }
+.verdict-word.休庭, .verdict-word.不予受理 { color: var(--ink-soft); }
+.verdict-rule { font-size: 14.5px; color: var(--ink-soft); max-width: 640px; margin: 0 auto 6px; line-height: 1.8; }
+.stamp {
+  display: inline-block;
+  font-family: var(--serif);
+  font-weight: 900;
+  border: 5px double var(--vermillion);
+  color: var(--vermillion);
+  padding: 8px 22px;
+  font-size: 22px;
+  letter-spacing: 0.3em;
+  transform: rotate(-8deg);
+  margin: 14px 0 4px;
+  animation: stamp-in 0.5s cubic-bezier(0.2, 1.6, 0.35, 1);
+  background: rgba(255, 255, 255, 0.6);
+}
+@keyframes stamp-in {
+  0% { transform: rotate(-8deg) scale(2.6); opacity: 0; }
+  55% { transform: rotate(-8deg) scale(0.9); opacity: 1; }
+  100% { transform: rotate(-8deg) scale(1); }
+}
+.gavel { font-size: 52px; display: inline-block; animation: gavel-hit 0.5s ease-out; }
+@keyframes gavel-hit {
+  0% { transform: rotate(-50deg) translateY(-26px); }
+  60% { transform: rotate(12deg) translateY(0); }
+  100% { transform: rotate(0); }
+}
+
+/* ---------- 表格与清单 ---------- */
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th, .table td { border: 2px solid var(--ink); padding: 8px 10px; text-align: left; vertical-align: top; }
+.table th { background: var(--paper-2); font-weight: 900; letter-spacing: 0.06em; }
+.badge {
+  display: inline-block;
+  font-size: 12.5px;
+  font-weight: 900;
+  border: 2.5px solid var(--ink);
+  padding: 1px 10px;
+  letter-spacing: 0.12em;
+  background: #fff;
+}
+.badge.v-不卫生 { background: var(--vermillion); color: #fff; }
+.badge.v-可能不卫生 { background: var(--gold); }
+.badge.v-卫生 { background: #cfe3d4; }
+.badge.v-休庭, .badge.v-不予受理 { background: #e8e4d8; }
+
+/* ---------- 设置 ---------- */
+.field { margin-bottom: 16px; }
+.field label { display: block; font-weight: 700; font-size: 14px; margin-bottom: 6px; letter-spacing: 0.06em; }
+.field input, .field select {
+  font-family: var(--sans);
+  font-size: 15px;
+  padding: 9px 12px;
+  border: var(--border);
+  background: #fff;
+  width: 100%;
+  max-width: 520px;
+}
+.field .desc { font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; line-height: 1.7; }
+.key-warn {
+  border: 2.5px solid var(--ink);
+  background: #fdf3d7;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.75;
+}
+
+/* ---------- 关于页 ---------- */
+.about-body p { line-height: 1.9; margin: 0 0 14px; }
+.about-body h3 {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: 19px;
+  margin: 26px 0 10px;
+  border-left: 6px solid var(--vermillion);
+  padding-left: 12px;
+}
+.footnote-box {
+  border: 2.5px dashed var(--ink-soft);
+  background: var(--paper-2);
+  padding: 14px 18px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  line-height: 1.85;
+}
+
+.footer {
+  border-top: var(--border);
+  background: #fff;
+  padding: 16px 20px 26px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  text-align: center;
+  line-height: 1.8;
+}

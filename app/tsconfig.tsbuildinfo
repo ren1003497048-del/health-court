@@ -1,0 +1,1 @@
+{"root":["./src/main.tsx","./src/court/evidence.ts","./src/court/prompts.ts","./src/court/textUtils.ts","./src/court/types.ts","./src/pipeline/index.ts","./src/providers/glm.ts","./src/providers/openai-compat.ts","./src/providers/types.ts","./src/store/local.ts","./src/ui/App.tsx","./src/ui/verdictExport.ts","./tests/core.test.ts","./scripts/e2e-310.ts"],"version":"5.9.3"}
