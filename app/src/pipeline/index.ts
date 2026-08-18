@@ -11,6 +11,7 @@ import {
 } from '../court/prompts';
 import { locateQuote, truncateSmart, parseJinaMarkdown, normalize } from '../court/textUtils';
 import { preReview, extractDate } from '../court/preReview';
+import { applyFingerprintDiscipline, isMirrorOrGenericSource } from '../court/fingerprintDiscipline';
 import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
@@ -30,6 +31,8 @@ export interface CourtRuntime {
   /** 跨阶段证据累加 */
   evidence: EvidenceItem[];
   sources: SourceDoc[];
+  /** 镜像源注记（归属链佐证，不参与对质） */
+  mirrorNotes?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +181,18 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
       searchKeywordsEn: (f.searchKeywordsEn || []).map(String).slice(0, 4),
     }))
     .filter((f) => f.targetQuote.length >= 6);
-  rt.log('侦查', `提取到 ${cf.fingerprints.length} 个指纹候选`);
+  // 指纹纪律（机制PRD v2 §3.1）：确定性过滤，LLM 之后、种子注入之前
+  {
+    const { kept, rejected } = applyFingerprintDiscipline(cf.fingerprints, cf.target.text, {
+      programName: inferProgramName(cf),
+      episodeTitle: cf.target.title,
+    });
+    cf.fingerprints = kept;
+    for (const rj of rejected.slice(0, 10)) {
+      rt.log('侦查', `指纹纪律淘汰 ${rj.fingerprint.id}：${rj.reason}`);
+    }
+    rt.log('侦查', `指纹纪律：保留 ${kept.length} / 淘汰 ${rejected.length}`);
+  }
 
   // 种子指纹注入（社区线报/母项目判例的已验证指纹，置顶）
   if (opts?.seedFingerprints?.length) {
@@ -227,6 +241,13 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
   return cf;
 }
 
+/** 从目标标题推断节目名（"338-xxx - 独树不成林 - Apple 播客" 的倒数第二段） */
+function inferProgramName(cf: CaseFile): string | undefined {
+  const seg = (cf.target.title || '').split(' - ');
+  if (seg.length >= 3) return seg[seg.length - 2].trim();
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // 阶段三：检索
 // ---------------------------------------------------------------------------
@@ -256,6 +277,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
 
   const seen = new Set<string>();
   const candidates: { doc: { title: string; url: string; snippet: string; date?: string }; via: string }[] = [];
+  const mirrorNotes: string[] = [];
   for (const { tag, q: query } of queries) {
     try {
       const { docs } = await rt.provider.search(query);
@@ -275,6 +297,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   const targetDate = cf.target.date ? Date.parse(cf.target.date) : NaN;
   rt.sources = [];
   const fetched: SourceDoc[] = [];
+  rt.mirrorNotes = mirrorNotes;
   for (const c of candidates.slice(0, maxSources + 4)) {
     if (fetched.length >= maxSources) break;
     let fullText = '';
@@ -287,6 +310,22 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       partial = fullText.length < 800;
     } catch {
       rt.log('检索', `候选源全文获取失败：${c.doc.url.slice(0, 60)}，以摘要对质`);
+    }
+    // 源卫生（机制PRD v2 §3.2）：自我镜像与平台壳页排除
+    {
+      const hyg = isMirrorOrGenericSource(
+        { title, url: c.doc.url, snippet: c.doc.snippet },
+        { title: cf.target.title, url: cf.input.url, author: cf.target.author },
+      );
+      if (hyg.generic) {
+        rt.log('检索', `候选源被源卫生排除（${hyg.note}）：${title.slice(0, 40)}`);
+        continue;
+      }
+      if (hyg.mirror) {
+        mirrorNotes.push(`${title.slice(0, 50)}（${hyg.note}）→ 转归属链佐证，不参与对质`);
+        rt.log('检索', `候选源为自我镜像（${hyg.note}），转归属链佐证：${title.slice(0, 40)}`);
+        continue;
+      }
     }
     // 源质量闸门（P0-4）：全文太短或疑似待售域名 → 丢弃并记录
     const parkHit = SOURCE_QUALITY_GATE.parkDomainWords.some((w) => (fullText + title).toLowerCase().includes(w.toLowerCase()));

@@ -17,7 +17,7 @@ function decodeSharedKey(): string {
   }
 }
 
-const SESSION_LIMIT = 12; // 每会话（页面生命周期）共享搜索次数上限
+const SESSION_LIMIT = 24; // 案件级预算（机制PRD v2 §3.2：R1-R4 四轮共 24 次）
 let sessionUsed = 0;
 
 export function sharedSearchRemaining(): number {

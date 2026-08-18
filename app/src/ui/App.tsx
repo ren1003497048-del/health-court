@@ -116,7 +116,7 @@ export function App(): React.ReactElement {
             return await serper.search(query);
           } catch (e: any) {
             if (String(e.message).includes('SHARED_QUOTA_EXCEEDED')) {
-              pushLog('检索', '本庭共享搜索额度已用尽（每会话 12 次）。可在设置中填入自己的 Serper Key（serper.dev 免费注册），或切换为主模型内置检索。');
+              pushLog('检索', '本庭共享搜索额度已用尽（每案 24 次）。可在设置中填入自己的 Serper Key（serper.dev 免费注册），或切换为主模型内置检索。');
             }
             throw e;
           }
@@ -699,7 +699,7 @@ function Settings(): React.ReactElement {
       <div className="field">
         <label>搜索通道</label>
         <select value={s.searchProvider} onChange={(e) => setS({ ...s, searchProvider: e.target.value as any })}>
-          <option value="serper">Serper（默认·本庭共享额度，每会话 12 次）</option>
+          <option value="serper">Serper（默认·本庭共享额度，每案 24 次）</option>
           <option value="provider">主模型内置检索（GLM web_search / Gemini google_search）</option>
         </select>
         <div className="desc">共享额度用尽或需更多次数：serper.dev 免费注册（2500 次），Key 填在下面。主模型为 DeepSeek / OpenAI 兼容时请选择 Serper。</div>
