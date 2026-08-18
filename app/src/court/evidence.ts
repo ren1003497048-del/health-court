@@ -14,6 +14,29 @@ export const EVIDENCE_LEVEL_INFO: Record<EvidenceLevel, { name: string; desc: st
 
 export type VerdictWord = '不卫生' | '可能不卫生' | '卫生' | '休庭' | '不予受理';
 
+/**
+ * 白话判据表（借鉴 podcastreview.github.io 框架，2026-08-19 用户拍板）：
+ * 面向用户的判定说明直接用工作性语言，不再要求用户转译 E1-E5 字母。
+ * 四判据：长距离顺序 / 罕见材料 / 例子组合 / 归因变化；同题、常识和单个事实重合不计。
+ */
+export const PLAIN_CRITERIA: Array<{ name: string; question: string; mapsTo: EvidenceLevel[] }> = [
+  { name: '长距离顺序', question: '两边的讲述是否在很长的距离上保持同一顺序（章节推进、案例先后）？', mapsTo: ['E2'] },
+  { name: '罕见材料', question: '是否出现同一个冷门案例、数据、怪词或错误（别处找不到的）？', mapsTo: ['E3', 'E4'] },
+  { name: '例子组合', question: '是否同一组例子以同样的组合方式出现（而非各讲各的）？', mapsTo: ['E3'] },
+  { name: '归因变化', question: '别人的话/经历/观点，是否被换成了自己的第一人称讲述？', mapsTo: ['E4', 'E3'] },
+];
+
+/** 证据等级 → 白话名（判决书用） */
+export function plainLevelName(level: EvidenceLevel): string {
+  switch (level) {
+    case 'E4': return '同一个错误（错误被照搬）';
+    case 'E3': return '罕见材料或例子组合对应';
+    case 'E2': return '长距离顺序对应';
+    case 'E5': return '句式直译对应';
+    default: return '主题相同';
+  }
+}
+
 export interface VerdictResult {
   word: VerdictWord;
   /** 触发该裁决的规则说明（写入判决书，保证可审计） */
@@ -157,9 +180,9 @@ export interface PreReviewResult {
   };
 }
 
-/** 判决书底部固定免责声明（措辞红线，不可由 LLM 改写） */
+/** 判决书底部固定免责声明（措辞红线，不可由 LLM 改写；借鉴 podcastreview 工作性分类框架） */
 export const DISCLAIMER =
-  '本判决为文本证据的自动化分析，非法律结论。「不卫生」等裁决词为游戏化表述，其对应的证据等级与阈值见判决书内说明。本庭不对内容作者作动机推断。请读者依据材料自行判断。';
+  '本判决为文本证据的自动化分析。「不卫生」等裁决词与「来源依赖」「归因问题」等描述，是用于描述文本关系的工作性分类，不构成任何机构对抄袭、侵权或学术不端的正式认定。涉及动机与工作流程的内容，如无直接证据，均应理解为基于现有材料的推断。材料可能并不完整；如后续取得新的原文或反证，本庭将据此修订。请读者依据材料自行判断。';
 
 /** 判决书页眉注脚（卫生法庭命名出处，产品人格的一部分） */
 export const NAMING_FOOTNOTE =

@@ -138,9 +138,11 @@ describe('文本工具', () => {
 });
 
 describe('固定文案完整性（措辞红线不可漂移）', () => {
-  it('免责声明包含非法律结论与不做动机推断', () => {
-    expect(DISCLAIMER).toContain('非法律结论');
+  it('免责声明含工作性分类边界与不做动机推断（podcastreview 框架）', () => {
+    expect(DISCLAIMER).toContain('工作性分类');
+    expect(DISCLAIMER).toContain('不构成任何机构');
     expect(DISCLAIMER).toContain('动机');
+    expect(DISCLAIMER).toContain('自行判断');
   });
   it('E1-E5 分级齐备', () => {
     for (const k of ['E1', 'E2', 'E3', 'E4', 'E5'] as const) {

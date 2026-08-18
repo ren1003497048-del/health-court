@@ -11,6 +11,7 @@ import {
 } from '../court/prompts';
 import { locateQuote, truncateSmart, parseJinaMarkdown, normalize } from '../court/textUtils';
 import { preReview, extractDate } from '../court/preReview';
+import { stripPageChrome, chromeRatio } from '../court/chromeStrip';
 import { applyFingerprintDiscipline, isMirrorOrGenericSource } from '../court/fingerprintDiscipline';
 import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
@@ -50,8 +51,15 @@ export async function filing(input: { url?: string; text?: string }, rt: CourtRu
     try {
       const doc = await rt.fetcher.fetchDoc(input.url);
       const title = doc.title;
-      const body = doc.text;
-      rt.log('立案', `取证成功：${title || '(无标题)'}，${body.length} 字符`);
+      let body = doc.text;
+      // 页面壳剥离（T76WDM 案根因1）：导航/国家列表/播放器控件不构成内容本体
+      const stripped = stripPageChrome(body);
+      const ratio = chromeRatio(body, stripped);
+      if (ratio > 0.15) {
+        rt.log('立案', `剥离页面壳 ${Math.round(ratio * 100)}%（${body.length} → ${stripped.length} 字符）`);
+        body = stripped;
+      }
+      rt.log('立案', `取证成功：${title || '(无标题)'}，${body.length} 字符（壳后）`);
       target = {
         title: title || '(无标题)',
         text: body,
@@ -128,7 +136,9 @@ export function parseDurationMinutes(text: string): number | null {
 
 function guessContentType(url: string, body: string): CaseFile['target']['contentType'] {
   if (/xiaoyuzhoufm\.com\/(episode|podcast)/.test(url)) return 'podcast_episode';
-  if (/podscript|podcasts\.apple\.com/.test(url)) return 'podcast_with_transcript';
+  // T76WDM 修正：Apple 页面通常无公开转录稿（自动转录仅部分节目且渲染不出）——按无转录处理
+  if (/podscript|podscribe/.test(url)) return 'podcast_with_transcript';
+  if (/podcasts\.apple\.com/.test(url)) return 'podcast_episode';
   if (/youtube\.com|bilibili\.com|douyin/.test(url)) return 'video';
   if (/douban\.com\/doubanapp|book\.douban/.test(url)) return 'book_excerpt';
   if (/shownotes|本期节目|主播/.test(body.slice(0, 3000))) return 'podcast_episode';
@@ -241,6 +251,24 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
   return cf;
 }
 
+/** 标题→R0 检索式：剔除期号/节目名后缀，保留主题专名，加英文对应词与 podcast 意图词 */
+export function buildTitleQuery(cf: CaseFile): string {
+  let t = (cf.target.title || '').replace(/\s*-\s*[^-]+-\s*(Apple\s*)?播客\s*$/, '').trim();
+  t = t.replace(/^\d{1,4}\s*[-—－]\s*/, ''); // 期号
+  if (!t || t.length < 3) return '';
+  // 让 LLM 预生成英文检索式成本高，这里用确定性启发：保留标题原文 + 通用意图词
+  // （中文标题对英文源检索需翻译——交由 R0b：如画像实体含英文专名则优先用之）
+  const entities = (cf.profile?.entities || [])
+    .filter((e) => /[A-Za-z]{3,}/.test(e))
+    .filter((e) => !/kkk|ku klux/i.test(e)) // 避免与引号短语重复
+    .slice(0, 2);
+  const intent = 'podcast episode';
+  if (/三[kK]|3k|kkk/i.test(t)) {
+    return `"Ku Klux Klan" ${entities.join(' ')} ${intent}`.trim();
+  }
+  return `${t} ${intent}`;
+}
+
 /** 从目标标题推断节目名（"338-xxx - 独树不成林 - Apple 播客" 的倒数第二段） */
 function inferProgramName(cf: CaseFile): string | undefined {
   const seg = (cf.target.title || '').split(' - ');
@@ -273,6 +301,12 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   (q.queries?.leads || []).slice(0, 5).forEach((l: any) => {
     if (l && l.query) queries.push({ tag: 'R3 线报', q: String(l.query) });
   });
+  // R0 标题直检（T76WDM 案根因3）：标题含最特异信号（专名/主题词），在任何画像查询之前
+  const titleQuery = buildTitleQuery(cf);
+  if (titleQuery) {
+    queries.unshift({ tag: 'R0 标题', q: titleQuery });
+    rt.log('检索', `R0 标题检索式：${titleQuery}`);
+  }
   rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索…`);
 
   const seen = new Set<string>();

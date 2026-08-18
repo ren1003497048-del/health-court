@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import type { CaseFile, SourceDoc } from '../court/types';
 import type { EvidenceItem, VerdictResult } from '../court/evidence';
 import type { VerdictDoc } from '../pipeline';
-import { EVIDENCE_LEVEL_INFO, NAMING_FOOTNOTE } from '../court/evidence';
+import { EVIDENCE_LEVEL_INFO, NAMING_FOOTNOTE, PLAIN_CRITERIA, plainLevelName } from '../court/evidence';
 import { DEFAULT_SETTINGS } from '../store/local';
 
 export type Tab = 'court' | 'archive' | 'settings' | 'about';
@@ -457,7 +457,7 @@ function VerdictView(props: {
         {doc.evidence.map((e) => (
           <div className="evidence-card" key={e.id}>
             <div className="evidence-head">
-              <span className={'evidence-level ' + e.level}>{e.level} {EVIDENCE_LEVEL_INFO[e.level].name}</span>
+              <span className={'evidence-level ' + e.level}>{e.level} {plainLevelName(e.level)}</span>
               <span className="evidence-id">{e.id} · {e.kind}</span>
             </div>
             <div style={{ fontSize: 13.5 }}>{e.description}</div>
@@ -752,7 +752,24 @@ function About(): React.ReactElement {
       <p>
         证据分级、指纹验证、结构对齐与裁决阈值全部由确定性规则驱动；引文必须通过子串定位校验。动画、音效、漫画元素只读取裁决结果用于演出，从不参与计算。把所有动画关掉，每份判决与之相比一字不差。
       </p>
-      <h3>证据分级（E1–E5）</h3>
+      <h3>本庭看什么（四条判据）</h3>
+      <p style={{ margin: '0 0 10px', fontSize: 14 }}>
+        同题、常识和单个事实的重合不计——只看以下四种痕迹：
+      </p>
+      <table className="table">
+        <thead>
+          <tr><th>判据</th><th>问题</th></tr>
+        </thead>
+        <tbody>
+          {PLAIN_CRITERIA.map((c) => (
+            <tr key={c.name}>
+              <td><b>{c.name}</b></td>
+              <td>{c.question}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h3>证据分级（E1–E5，内部技术分级）</h3>
       <table className="table">
         <thead>
           <tr>
@@ -775,10 +792,10 @@ function About(): React.ReactElement {
       </table>
       <h3>裁决阈值</h3>
       <ul style={{ lineHeight: 1.9 }}>
-        <li>不卫生：E4 命中，或 E2 + ≥3 处 E3 指纹</li>
-        <li>可能不卫生：E3 有命中（&lt;3 处或无结构对应），或 E1+E2</li>
-        <li>卫生：完成对质而未命中，或署名完整</li>
-        <li>休庭：内容不可得 / 无候选源 / 证据不足（未发现 ≠ 清白）</li>
+        <li>不卫生：发现「同一个错误」（错误被照搬），或长距离顺序 + 至少 3 处罕见材料对应</li>
+        <li>可能不卫生：出现罕见材料或例子组合的对应，但数量或连贯性不足</li>
+        <li>卫生：完成对质而未发现上述四种痕迹（未发现 ≠ 清白）</li>
+        <li>休庭：内容不可得 / 无候选源 / 证据不足</li>
       </ul>
       <h3>命名出处</h3>
       <div className="footnote-box">{NAMING_FOOTNOTE}</div>

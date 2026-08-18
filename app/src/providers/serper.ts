@@ -17,7 +17,7 @@ function decodeSharedKey(): string {
   }
 }
 
-const SESSION_LIMIT = 24; // 案件级预算（机制PRD v2 §3.2：R1-R4 四轮共 24 次）
+const SESSION_LIMIT = 36; // 案件级预算（2026-08-19 用户拍板：MVP 不过分节约，R0-R4 五轮放开）
 let sessionUsed = 0;
 
 export function sharedSearchRemaining(): number {

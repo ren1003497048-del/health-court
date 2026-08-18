@@ -2,7 +2,7 @@
 // CJK 排版规则：全角标点、无中文斜体、Noto SC 字体栈、line-height ≥ 1.7
 
 import type { VerdictDoc } from '../pipeline';
-import { EVIDENCE_LEVEL_INFO } from '../court/evidence';
+import { EVIDENCE_LEVEL_INFO, plainLevelName } from '../court/evidence';
 
 function esc(s: string): string {
   return String(s ?? '')
@@ -22,7 +22,7 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
     .map(
       (e: any) => `
       <div class="ev">
-        <div class="ev-head"><span class="lv ${e.level}">${e.level} ${esc(EVIDENCE_LEVEL_INFO[e.level as keyof typeof EVIDENCE_LEVEL_INFO]?.name || '')}</span><span class="ev-id">${esc(e.id)} · ${esc(e.kind)}</span></div>
+        <div class="ev-head"><span class="lv ${e.level}">${e.level} ${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.id)} · ${esc(e.kind)}</span></div>
         <div class="ev-desc">${esc(e.description)}</div>
         ${e.targetQuote ? `<div class="q"><span class="ql">目标引文</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
         ${e.sourceQuote ? `<div class="q"><span class="ql">源引文</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
