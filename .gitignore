@@ -3,3 +3,4 @@ dist/
 .shots/
 e2e-result.json
 *.tmp
+tsconfig.tsbuildinfo
