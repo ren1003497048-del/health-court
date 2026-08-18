@@ -678,17 +678,65 @@ function Settings(): React.ReactElement {
   const test = async () => {
     setTesting(true);
     setTestResult(null);
+    const lines: string[] = [];
     try {
-      const { createGlmProvider } = await import('../providers/glm');
-      const { createOpenAiCompatProvider } = await import('../providers/openai-compat');
-      const p =
-        s.kind === 'glm'
-          ? createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model })
-          : createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
-      const r = await p.chat([{ role: 'user', content: '连通性自检：请回答"就绪"。' }], { maxTokens: 20 });
-      setTestResult(`✅ ${r.model} 连通正常`);
-    } catch (e: any) {
-      setTestResult(`❌ ${String(e.message).slice(0, 200)}`);
+      // ① 主模型
+      try {
+        const { createGlmProvider } = await import('../providers/glm');
+        const { createOpenAiCompatProvider } = await import('../providers/openai-compat');
+        const { createDeepSeekProvider, createGeminiProvider } = await import('../providers/multi');
+        let p;
+        if (s.kind === 'glm') p = createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
+        else if (s.kind === 'deepseek') p = createDeepSeekProvider({ apiKey: s.apiKey, model: s.model || 'deepseek-chat' });
+        else if (s.kind === 'gemini') p = createGeminiProvider({ apiKey: s.apiKey, model: s.model || 'gemini-2.0-flash' });
+        else p = createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
+        const r = await p.chat([{ role: 'user', content: '连通性自检：请回答"就绪"。' }], { maxTokens: 20 });
+        lines.push(`① 主模型 ${r.model}：✅ 连通`);
+      } catch (e: any) {
+        lines.push(`① 主模型：❌ ${String(e.message).slice(0, 90)}`);
+      }
+      // ② 搜索通道
+      try {
+        if (s.searchProvider === 'serper') {
+          const { createSerperSearch, sharedSearchRemaining } = await import('../providers/serper');
+          if (s.serperApiKey) {
+            const sp = createSerperSearch({ userApiKey: s.serperApiKey });
+            const { docs } = await sp.search('connectivity test');
+            lines.push(`② 搜索 Serper（自有 Key）：✅ 返回 ${docs.length} 条`);
+          } else {
+            const left = sharedSearchRemaining();
+            lines.push(`② 搜索 Serper（共享额度）：${left > 0 ? `✅ 本案剩余 ${left} 次` : '⚠️ 共享额度已用尽，建议注册自己的 Key'}`);
+          }
+        } else {
+          if (s.kind === 'deepseek' || s.kind === 'openai-compat') {
+            lines.push('② 搜索：⚠️ 当前主模型无内置检索，请切换搜索通道为 Serper');
+          } else {
+            const { docs } = await (async () => {
+              const { createSerperSearch } = await import('../providers/serper');
+              void createSerperSearch;
+              return { docs: [] };
+            })();
+            lines.push(`② 搜索 主模型内置（${s.kind === 'glm' ? 'GLM web_search' : 'Gemini google_search'}）：将在开庭时实测`);
+          }
+        }
+      } catch (e: any) {
+        lines.push(`② 搜索：❌ ${String(e.message).slice(0, 90)}`);
+      }
+      // ③ 语音转录
+      try {
+        if (s.asrKind === 'groq') {
+          if (!s.groqApiKey) {
+            lines.push('③ 转录 Groq：⚠️ 未填 Key——提交播客单集将无法自动转录（console.groq.com 免费注册）');
+          } else {
+            lines.push('③ 转录 Groq whisper-large-v3：✅ Key 已配置（首次转录时实测）');
+          }
+        } else {
+          lines.push('③ 转录 GLM ASR：复用主模型 Key（需 bigmodel 账户含 ASR 额度，首次转录时实测）');
+        }
+      } catch (e: any) {
+        lines.push(`③ 转录：❌ ${String(e.message).slice(0, 90)}`);
+      }
+      setTestResult(lines.join('\n'));
     } finally {
       setTesting(false);
     }
@@ -712,12 +760,12 @@ function Settings(): React.ReactElement {
           <option value="openai-compat">OpenAI 兼容端点（Moonshot / OpenRouter / 自建）</option>
         </select>
         <div className="desc">
-          GLM 默认端点 https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4-flash（免费档）。DeepSeek：api.deepseek.com（deepseek-chat，无内置检索）。Gemini：generativelanguage.googleapis.com（gemini-2.0-flash，原生 google_search，推荐）。
+          <a href="https://open.bigmodel.cn" target="_blank" rel="noreferrer">GLM bigmodel.cn ↗</a>（默认，glm-4-flash 免费档）· <a href="https://platform.deepseek.com" target="_blank" rel="noreferrer">DeepSeek ↗</a>（deepseek-chat，无内置检索）· <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio ↗</a>（gemini-2.0-flash，原生 google_search，推荐）· 其他 OpenAI 兼容端点自填 Base URL。
         </div>
       </div>
       <div className="field">
         <label>API Key</label>
-        <input type="password" value={s.apiKey} onChange={(e) => setS({ ...s, apiKey: e.target.value })} placeholder="sk-..." />
+        <input type="password" value={s.apiKey} onChange={(e) => setS({ ...s, apiKey: e.target.value })} placeholder="填入所选供应商的 API Key（GLM: bigmodel.cn 控制台创建）" />
       </div>
       <div className="field">
         <label>Base URL</label>
@@ -735,7 +783,7 @@ function Settings(): React.ReactElement {
       )}
       <div className="field">
         <label>Jina Key（可选，提高抓取配额）</label>
-        <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="留空 = 免费档" />
+        <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="可留空使用免费额度；jina.ai 注册可提速提量" />
       </div>
       <div className="field">
         <label>搜索通道</label>
@@ -743,8 +791,10 @@ function Settings(): React.ReactElement {
           <option value="serper">Serper（默认·本庭共享额度，每案 24 次）</option>
           <option value="provider">主模型内置检索（GLM web_search / Gemini google_search）</option>
         </select>
-        <div className="desc">共享额度用尽或需更多次数：serper.dev 免费注册（2500 次），Key 填在下面。主模型为 DeepSeek / OpenAI 兼容时请选择 Serper。</div>
-        <input style={{ marginTop: 8 }} type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="自己的 Serper Key（可选）" />
+        <div className="desc">
+          共享额度用尽或需更多次数，可<a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a>免费注册（2500 次额度），Key 填在下面。主模型为 DeepSeek / OpenAI 兼容端点时，请选择 Serper 作为搜索通道。
+        </div>
+        <input style={{ marginTop: 8 }} type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="填入你在 serper.dev 的 Key（64 位，x- 开头无需处理）" />
       </div>
       <div className="field">
         <label>语音转录（播客单集自动转录）</label>
@@ -753,9 +803,11 @@ function Settings(): React.ReactElement {
           <option value="glm">GLM ASR（复用上方 GLM Key，需 ASR 额度）</option>
         </select>
         {s.asrKind === 'groq' && (
-          <input style={{ marginTop: 8 }} type="password" value={s.groqApiKey} onChange={(e) => setS({ ...s, groqApiKey: e.target.value })} placeholder="Groq API Key" />
+          <input style={{ marginTop: 8 }} type="password" value={s.groqApiKey} onChange={(e) => setS({ ...s, groqApiKey: e.target.value })} placeholder="填入 Groq Key（gsk_ 开头，API Keys 页面创建）" />
         )}
-        <div className="desc">提交播客单集链接时，本庭自动定位音频并转录为内容本体。音频经你的浏览器直连所选转录服务。</div>
+        <div className="desc">
+          提交播客单集链接时，本庭自动定位音频并转录为内容本体。Groq：<a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys ↗</a>注册后在 API Keys 页创建（免费，whisper-large-v3）。音频经你的浏览器直连所选转录服务。
+        </div>
       </div>
       <div className="input-row">
         <button className="btn" onClick={save} disabled={!s.apiKey}>
