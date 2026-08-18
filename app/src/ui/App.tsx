@@ -3,6 +3,7 @@ import type { CaseFile, SourceDoc } from '../court/types';
 import type { EvidenceItem, VerdictResult } from '../court/evidence';
 import type { VerdictDoc } from '../pipeline';
 import { EVIDENCE_LEVEL_INFO, NAMING_FOOTNOTE } from '../court/evidence';
+import { DEFAULT_SETTINGS } from '../store/local';
 
 export type Tab = 'court' | 'archive' | 'settings' | 'about';
 
@@ -28,11 +29,54 @@ export function App(): React.ReactElement {
     if (typeof history !== 'undefined') history.replaceState(null, '', '#' + t);
   };
   const [input, setInput] = useState('');
-  const [mode, setMode] = useState<'url' | 'text'>('url');
+  const [bodyText, setBodyText] = useState('');
   const [running, setRunning] = useState<RunningState | null>(null);
   const [verdictDoc, setVerdictDoc] = useState<VerdictDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mentalHygiene, setMentalHygiene] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  /** 播客单集自动转录：Apple→iTunes enclosure / 小宇宙→shownotes 内无音频则提示 */
+  const logSinkRef = useRef<(stage: string, note: string) => void>(() => {});
+  const tryTranscribe = async (cf: CaseFile, rt: any, s: any): Promise<boolean> => {
+    try {
+      const { itunesLookupEpisode, transcribeAudio } = await import('../providers/multi');
+      const { transcribeAudioUrl } = await import('../pipeline/transcribe');
+      let audioUrl = '';
+      let meta: any = null;
+      if (/podcasts\.apple\.com/.test(cf.input.url || '')) {
+        meta = await itunesLookupEpisode(cf.input.url!);
+        audioUrl = meta?.enclosureUrl || '';
+        if (meta?.podcastName) cf.target.author = cf.target.author || meta.podcastName;
+        if (meta?.releaseDate) cf.target.date = cf.target.date || meta.releaseDate.slice(0, 10);
+      }
+      if (!audioUrl) {
+        logSinkRef.current('立案', '未能定位音频地址（该平台未提供可自动转录的音频通道）');
+        return false;
+      }
+      logSinkRef.current('立案', `定位音频成功（${Math.round((meta?.durationMs || 0) / 60000)} 分钟），开始浏览器内转录…`);
+      const asrKind: 'groq' | 'glm' = s.asrKind === 'glm' ? 'glm' : 'groq';
+      const asrKey = asrKind === 'glm' ? s.apiKey : s.groqApiKey;
+      if (!asrKey) {
+        logSinkRef.current('立案', '未配置 ASR Key（设置 → 语音转录）：无法自动转录');
+        return false;
+      }
+      const { segments, fullText, durationSec } = await transcribeAudioUrl(
+        audioUrl,
+        { kind: asrKind, apiKey: asrKey },
+        (p) => logSinkRef.current('立案', `转录进度 ${p.doneChunks}/${p.totalChunks} 块（${p.currentMinutes}）`),
+      );
+      cf.target.text = fullText;
+      cf.target.contentType = 'podcast_with_transcript';
+      cf.target.degraded = false;
+      cf.transcriptMeta = { audioUrl, durationSec, asrModel: asrKind === 'groq' ? 'whisper-large-v3' : 'glm-asr', transcribedAt: new Date().toISOString() };
+      logSinkRef.current('立案', `转录完成：${fullText.length} 字符，${segments.length} 段`);
+      return true;
+    } catch (e: any) {
+      logSinkRef.current('立案', `自动转录失败：${String(e.message).slice(0, 120)}`);
+      return false;
+    }
+  };
 
   const scrollLog = useCallback(() => {
     requestAnimationFrame(() => {
@@ -50,15 +94,40 @@ export function App(): React.ReactElement {
       if (!s.apiKey) throw new Error('尚未配置 API Key。请到「设置」页填写（默认 GLM / glm-4-flash）。');
       const { createGlmProvider } = await import('../providers/glm');
       const { createOpenAiCompatProvider, createJinaFetcher } = await import('../providers/openai-compat');
-      const provider =
-        s.kind === 'glm'
-          ? createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model, searchModel: s.searchModel || undefined })
-          : createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
+      const { createDeepSeekProvider, createGeminiProvider } = await import('../providers/multi');
+      const { createSerperSearch } = await import('../providers/serper');
+      let provider;
+      if (s.kind === 'glm') {
+        provider = createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model, searchModel: s.searchModel || undefined });
+      } else if (s.kind === 'deepseek') {
+        provider = createDeepSeekProvider({ apiKey: s.apiKey, model: s.model || 'deepseek-chat' });
+      } else if (s.kind === 'gemini') {
+        provider = createGeminiProvider({ apiKey: s.apiKey, model: s.model || 'gemini-2.0-flash' });
+      } else {
+        provider = createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
+      }
       const fetcher = createJinaFetcher({ apiKey: s.jinaApiKey || undefined });
+      // 搜索通道：serper（共享/自填 Key）；额度尽或选择 provider 时回落主模型内置搜索
+      const serper = createSerperSearch({ userApiKey: s.serperApiKey || undefined });
+      const originalSearch = provider.search.bind(provider);
+      provider.search = async (query: string) => {
+        if (s.searchProvider === 'serper') {
+          try {
+            return await serper.search(query);
+          } catch (e: any) {
+            if (String(e.message).includes('SHARED_QUOTA_EXCEEDED')) {
+              pushLog('检索', '本庭共享搜索额度已用尽（每会话 12 次）。可在设置中填入自己的 Serper Key（serper.dev 免费注册），或切换为主模型内置检索。');
+            }
+            throw e;
+          }
+        }
+        return originalSearch(query);
+      };
 
       const logs: RunningState['logs'] = [];
       let objTimer: number | undefined;
       const pushLog = (stage: string, note: string) => {
+        logSinkRef.current = pushLog;
         logs.push({ stage, note, at: new Date().toISOString() });
         const stageIdx = STAGES.indexOf(stage as any);
         setRunning((r) =>
@@ -82,8 +151,43 @@ export function App(): React.ReactElement {
       const rt = { provider, fetcher, log: pushLog, evidence: [] as EvidenceItem[], sources: [] as SourceDoc[] };
       const pipeline = await import('../pipeline');
 
-      const inputObj = mode === 'url' ? { url: input.trim() } : { text: input };
-      const cf: CaseFile = await pipeline.filing(inputObj, rt);
+      const inputObj = input.trim() ? { url: input.trim(), text: bodyText.trim() || undefined } : { text: bodyText };
+      let cf: CaseFile;
+      try {
+        cf = await pipeline.filing(inputObj, rt);
+      } catch (e: any) {
+        if (e && e.preReviewFail) {
+          setMentalHygiene(e.failNote || '');
+          throw new Error('__MENTAL_HYGIENE__');
+        }
+        throw e;
+      }
+      // 预审弹窗（不通过且可转录时走转录；完全不可用时精神卫生提示）
+      if (cf.preReview && !cf.preReview.pass) {
+        const fail = cf.preReview;
+        // 播客单集无内容本体 → 尝试自动转录
+        if (!fail.completeness.hasSubstantialBody && fail.attributionChain.platform) {
+          setRunning((r) => (r ? { ...r, stageIndex: 0 } : r));
+          pushLog('立案', '页面仅含简介，本庭尝试自动转录音频以获取内容本体…');
+          const transcribed = await tryTranscribe(cf, rt, s);
+          if (!transcribed) {
+            setMentalHygiene(fail.failNote || '');
+            throw new Error('__MENTAL_HYGIENE__');
+          }
+          // 重新预审
+          const review2 = await import('../court/preReview').then((m) =>
+            m.preReview({ url: cf.input.url, text: cf.target.text, fetched: { title: cf.target.title, text: cf.target.text } }),
+          );
+          if (!review2.pass) {
+            setMentalHygiene(review2.failNote || '');
+            throw new Error('__MENTAL_HYGIENE__');
+          }
+          cf.preReview = review2;
+        } else {
+          setMentalHygiene(fail.failNote || '');
+          throw new Error('__MENTAL_HYGIENE__');
+        }
+      }
       setRunning((r) => (r ? { ...r, stageIndex: 1 } : r));
       await pipeline.investigation(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 2, fingerprints: cf.fingerprints.length } : r));
@@ -96,10 +200,14 @@ export function App(): React.ReactElement {
       const { saveToArchive } = await import('../store/local');
       saveToArchive(doc);
     } catch (e: any) {
+      if (String(e?.message) === '__MENTAL_HYGIENE__') {
+        setRunning(null);
+        return; // 弹窗已由 setMentalHygiene 触发
+      }
       setError(String(e?.message || e));
       setRunning(null);
     }
-  }, [input, mode, scrollLog]);
+  }, [input, bodyText, scrollLog]);
 
   return (
     <>
@@ -128,13 +236,25 @@ export function App(): React.ReactElement {
         </p>
       </header>
 
+            {mentalHygiene && (
+        <div className="objection-overlay" style={{ pointerEvents: 'auto', background: 'rgba(250,246,238,0.96)' }} onClick={() => setMentalHygiene(null)}>
+          <div style={{ background: '#fff', border: 'var(--border)', boxShadow: 'var(--shadow)', padding: '34px 38px', maxWidth: 640, margin: '0 20px', textAlign: 'center' }}>
+            <div style={{ fontSize: 40, marginBottom: 8 }}>🧠⚖️</div>
+            <div style={{ fontFamily: 'var(--serif)', fontWeight: 900, fontSize: 26, marginBottom: 12 }}>请自行注意精神卫生</div>
+            <p style={{ fontSize: 14.5, lineHeight: 1.9, margin: '0 0 16px', textAlign: 'left' }}>{mentalHygiene}</p>
+            <div className="footnote-box" style={{ marginBottom: 18 }}>我们生活在需要格外注意精神卫生的时代。</div>
+            <button className="btn" onClick={() => setMentalHygiene(null)}>我知道了</button>
+          </div>
+        </div>
+      )}
+
       <main>
         {tab === 'court' && (
           <Courtroom
             input={input}
             setInput={setInput}
-            mode={mode}
-            setMode={setMode}
+            bodyText={bodyText}
+            setBodyText={setBodyText}
             running={running}
             verdictDoc={verdictDoc}
             error={error}
@@ -162,15 +282,15 @@ export function App(): React.ReactElement {
 function Courtroom(props: {
   input: string;
   setInput: (s: string) => void;
-  mode: 'url' | 'text';
-  setMode: (m: 'url' | 'text') => void;
+  bodyText: string;
+  setBodyText: (s: string) => void;
   running: RunningState | null;
   verdictDoc: VerdictDoc | null;
   error: string | null;
   run: () => void;
   logRef: React.RefObject<HTMLDivElement>;
 }): React.ReactElement {
-  const { input, setInput, mode, setMode, running, verdictDoc, error, run, logRef } = props;
+  const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef } = props;
   const [exporting, setExporting] = useState(false);
 
   const exportHtml = useCallback(async () => {
@@ -204,38 +324,33 @@ function Courtroom(props: {
 
       <section className={'panel' + (running?.shake ? ' shake' : '')}>
         <h2 className="panel-title">提交案件</h2>
-        <div className="input-row" style={{ marginBottom: 10 }}>
-          <button className={'nav-tab' + (mode === 'url' ? ' active' : '')} onClick={() => setMode('url')}>
-            链接模式
-          </button>
-          <button className={'nav-tab' + (mode === 'text' ? ' active' : '')} onClick={() => setMode('text')}>
-            粘贴正文
-          </button>
-        </div>
         <div className="input-row">
-          {mode === 'url' ? (
-            <input
-              className="input-main"
-              placeholder="粘贴文化内容页面的 URL（播客单集 / 文章 / 有转录稿的节目页）"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={!!running}
-            />
-          ) : (
-            <textarea
-              className="input-main"
-              placeholder="粘贴完整正文（不少于 500 字的相对独立内容整体）"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={!!running}
-            />
-          )}
-          <button className="btn btn-red" onClick={run} disabled={!!running || !input.trim()}>
+          <input
+            className="input-main"
+            placeholder="链接：播客单集 / 文章 / 有转录稿的节目页（首选，本庭自动取证与转录）"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={!!running}
+          />
+        </div>
+        <div className="input-row" style={{ marginTop: 10 }}>
+          <textarea
+            className="input-main"
+            placeholder="（可选）粘贴正文或转录稿——若你手头有现成文稿可跳过本庭的自动转录；粘贴文本时建议附上作者与发表信息（含年月日）"
+            value={bodyText}
+            onChange={(e) => setBodyText(e.target.value)}
+            disabled={!!running}
+          />
+        </div>
+        <div className="input-row" style={{ marginTop: 10 }}>
+          <button className="btn btn-red" onClick={run} disabled={!!running || (!input.trim() && !bodyText.trim())}>
             {running ? '开庭中…' : '开 庭'}
           </button>
         </div>
         <p className="hint">
-          评定对象须为相对独立、自身完整的文化内容整体：文字不少于 500 字，或音频不少于 5 分钟。评论区等意外发现只作为补充线索，不单独开庭。
+          评定对象须为相对独立、自身完整的文化内容整体：文字不少于 500 字，或音频不少于 5 分钟。
+          播客单集若无现成转录稿，本庭将尝试自动转录（需在设置中配置 ASR）。
+          检索面覆盖境外源时，建议在可访问国际网络的环境下使用，结果更全面。
         </p>
         {error && (
           <div className="key-warn" style={{ borderColor: 'var(--vermillion)', background: '#fbe3df' }}>
@@ -497,12 +612,12 @@ function Archive(): React.ReactElement {
 
 function Settings(): React.ReactElement {
   const [s, setS] = useState(() => {
-    // loadSettings 是同步 localStorage 读取，在组件里安全
     try {
       const raw = localStorage.getItem('health-court.settings.v1');
-      if (raw) return { ...JSON.parse(raw) };
-    } catch { /* ignore */ }
-    return null as any;
+      return raw ? ({ ...DEFAULT_SETTINGS, ...JSON.parse(raw) } as typeof DEFAULT_SETTINGS) : { ...DEFAULT_SETTINGS };
+    } catch {
+      return { ...DEFAULT_SETTINGS } as typeof DEFAULT_SETTINGS | null;
+    }
   });
   const [saved, setSaved] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -551,10 +666,12 @@ function Settings(): React.ReactElement {
           onChange={(e) => setS({ ...s, kind: e.target.value as any })}
         >
           <option value="glm">GLM（智谱 bigmodel，默认）</option>
-          <option value="openai-compat">OpenAI 兼容端点（DeepSeek / Moonshot / OpenRouter / 自建）</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="gemini">Google Gemini（推荐）</option>
+          <option value="openai-compat">OpenAI 兼容端点（Moonshot / OpenRouter / 自建）</option>
         </select>
         <div className="desc">
-          GLM 默认端点 https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4-flash（免费档，含 web_search 检索）。GLM Coding Plan 用户可改用 coding 端点 + 套餐模型，但该端点模型无联网检索，检索阶段将受限。
+          GLM 默认端点 https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4-flash（免费档）。DeepSeek：api.deepseek.com（deepseek-chat，无内置检索）。Gemini：generativelanguage.googleapis.com（gemini-2.0-flash，原生 google_search，推荐）。
         </div>
       </div>
       <div className="field">
@@ -578,6 +695,26 @@ function Settings(): React.ReactElement {
       <div className="field">
         <label>Jina Key（可选，提高抓取配额）</label>
         <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="留空 = 免费档" />
+      </div>
+      <div className="field">
+        <label>搜索通道</label>
+        <select value={s.searchProvider} onChange={(e) => setS({ ...s, searchProvider: e.target.value as any })}>
+          <option value="serper">Serper（默认·本庭共享额度，每会话 12 次）</option>
+          <option value="provider">主模型内置检索（GLM web_search / Gemini google_search）</option>
+        </select>
+        <div className="desc">共享额度用尽或需更多次数：serper.dev 免费注册（2500 次），Key 填在下面。主模型为 DeepSeek / OpenAI 兼容时请选择 Serper。</div>
+        <input style={{ marginTop: 8 }} type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="自己的 Serper Key（可选）" />
+      </div>
+      <div className="field">
+        <label>语音转录（播客单集自动转录）</label>
+        <select value={s.asrKind} onChange={(e) => setS({ ...s, asrKind: e.target.value as any })}>
+          <option value="groq">Groq · whisper-large-v3（推荐，console.groq.com 免费注册）</option>
+          <option value="glm">GLM ASR（复用上方 GLM Key，需 ASR 额度）</option>
+        </select>
+        {s.asrKind === 'groq' && (
+          <input style={{ marginTop: 8 }} type="password" value={s.groqApiKey} onChange={(e) => setS({ ...s, groqApiKey: e.target.value })} placeholder="Groq API Key" />
+        )}
+        <div className="desc">提交播客单集链接时，本庭自动定位音频并转录为内容本体。音频经你的浏览器直连所选转录服务。</div>
       </div>
       <div className="input-row">
         <button className="btn" onClick={save} disabled={!s.apiKey}>

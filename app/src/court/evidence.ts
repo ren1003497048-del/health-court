@@ -75,14 +75,9 @@ export function mapVerdict(
     };
   }
 
-  if (attribution === 'complete') {
-    return {
-      word: '卫生',
-      rule: '署名完整：目标内容已明确标注来源，不构成来源依赖（母项目「署名完整」级）',
-      counts,
-      attribution,
-    };
-  }
+  // 2026-08-18 P0 修正（364案教训）：署名不再短路裁决。
+  // 署名只说明存在归属声明，不代表内容本体是一手的；E4/E3 命中照样判不卫生。
+  // attribution 仅作为判决书注记（见 verdictStage）。
 
   if (stats.e4 >= 1) {
     return {
@@ -130,6 +125,35 @@ export function mapVerdict(
     rule: '就本案核查范围（见核查范围与局限栏），三维度均未发现来源依赖痕迹；「未发现」不等于「证明清白」',
     counts,
     attribution,
+  };
+}
+
+/** 候选源质量闸门（P0-4）：低于此阈值的候选源不得入卷参与对质 */
+export const SOURCE_QUALITY_GATE = {
+  minTextChars: 800, // 全文长度下限（去除导航/页脚后的实质内容）
+  parkDomainWords: ['is for sale', 'buy this domain', 'domain for sale', '待售'],
+};
+
+/** 归属预审结论 */
+export interface PreReviewResult {
+  pass: boolean;
+  /** 归属链：作者/节目/发布日期（尽可能精确到年月日） */
+  attributionChain: {
+    author?: string;
+    program?: string;
+    platform?: string;
+    /** ISO 日期（YYYY-MM-DD 或更粗） */
+    publishedDate?: string;
+    datePrecision: 'day' | 'month' | 'year' | 'none';
+    evidenceNote: string;
+  };
+  /** 未通过时的说明（弹窗「请自行注意精神卫生」附文） */
+  failNote?: string;
+  /** 独立完整性判断：是否相对独立、具备完整性的文化内容 */
+  completeness: {
+    isIndependentWork: boolean;
+    hasSubstantialBody: boolean;
+    note: string;
   };
 }
 

@@ -1,12 +1,19 @@
 // 设置与档案的 localStorage 存储（Key 只存用户浏览器，见 PRD §9）
 
 export interface ProviderSettings {
-  kind: 'glm' | 'openai-compat';
+  kind: 'glm' | 'openai-compat' | 'deepseek' | 'gemini';
   apiKey: string;
   baseUrl: string;
   model: string;
   searchModel: string;
   jinaApiKey: string;
+  /** 搜索通道：serper（默认共享Key）/ provider（GLM/Gemini 内置） */
+  searchProvider: 'serper' | 'provider';
+  /** 用户自填 Serper Key（可选，覆盖共享 Key） */
+  serperApiKey: string;
+  /** 语音转录：groq（免费注册）/ glm（复用GLM Key，需ASR额度） */
+  asrKind: 'groq' | 'glm';
+  groqApiKey: string;
 }
 
 export const DEFAULT_SETTINGS: ProviderSettings = {
@@ -16,6 +23,10 @@ export const DEFAULT_SETTINGS: ProviderSettings = {
   model: 'glm-4-flash',
   searchModel: '',
   jinaApiKey: '',
+  searchProvider: 'serper',
+  serperApiKey: '',
+  asrKind: 'groq',
+  groqApiKey: '',
 };
 
 const SETTINGS_KEY = 'health-court.settings.v1';

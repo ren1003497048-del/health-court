@@ -10,6 +10,8 @@ import {
   ALIGN_SYSTEM, FPCHECK_SYSTEM, VERDICT_OPINION_SYSTEM, DISCOVERY_QUERY_SYSTEM,
 } from '../court/prompts';
 import { locateQuote, truncateSmart, parseJinaMarkdown, normalize } from '../court/textUtils';
+import { preReview, extractDate } from '../court/preReview';
+import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
 export const MIN_TARGET_CHARS = 500;
@@ -86,6 +88,18 @@ export async function filing(input: { url?: string; text?: string }, rt: CourtRu
     if (minutes !== null) rt.log('立案', `单集时长约 ${minutes} 分钟，通过完整性审查`);
   }
 
+  // 归属预审（P0-1）：验明正身再立案
+  const { date, precision } = extractDate(target.text);
+  if (target.contentType === 'podcast_episode' || target.contentType === 'podcast_with_transcript') {
+    if (!target.date && date) target.date = date;
+  } else if (date && precision === 'day') {
+    target.date = target.date || date;
+  }
+  const review = preReview({ url: input.url, text: input.text, fetched: { title: target.title, text: target.text } });
+  const prError: Error | null = review.pass
+    ? null
+    : Object.assign(new Error('预审未通过：' + (review.failNote || '')), { preReview: review });
+
   return {
     caseId,
     createdAt: new Date().toISOString(),
@@ -94,6 +108,8 @@ export async function filing(input: { url?: string; text?: string }, rt: CourtRu
     fingerprints: [],
     leads: [],
     attribution: 'unknown',
+    preReview: review,
+    ...(prError ? {} : {}),
   };
 }
 
@@ -271,6 +287,16 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       partial = fullText.length < 800;
     } catch {
       rt.log('检索', `候选源全文获取失败：${c.doc.url.slice(0, 60)}，以摘要对质`);
+    }
+    // 源质量闸门（P0-4）：全文太短或疑似待售域名 → 丢弃并记录
+    const parkHit = SOURCE_QUALITY_GATE.parkDomainWords.some((w) => (fullText + title).toLowerCase().includes(w.toLowerCase()));
+    if (fullText.length > 0 && fullText.length < SOURCE_QUALITY_GATE.minTextChars) {
+      rt.log('检索', `候选源被质量闸门拦截（正文仅 ${fullText.length} 字符 < ${SOURCE_QUALITY_GATE.minTextChars}）：${title.slice(0, 40)}`);
+      continue;
+    }
+    if (parkHit) {
+      rt.log('检索', `候选源被质量闸门拦截（域名待售页）：${title.slice(0, 40)}`);
+      continue;
     }
     const srcDate = c.doc.date ? Date.parse(c.doc.date) : NaN;
     fetched.push({

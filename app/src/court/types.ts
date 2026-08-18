@@ -32,6 +32,10 @@ export interface CaseFile {
   leads: CommunityLead[];
   attribution: 'complete' | 'partial' | 'none' | 'unknown';
   attributionNote?: string;
+  /** 归属预审结论（P0-1） */
+  preReview?: import('./evidence').PreReviewResult;
+  /** 转录元数据（P0-3，播客单集经浏览器转录时填写） */
+  transcriptMeta?: { audioUrl: string; durationSec: number; asrModel: string; transcribedAt: string };
 }
 
 export interface CaseProfile {

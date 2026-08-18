@@ -26,8 +26,11 @@ describe('裁决映射（PRD §4.2 阈值）', () => {
     expect(mapVerdict({ ...base, e5: 2 }, 'none', usable, true).word).toBe('可能不卫生');
     expect(mapVerdict({ ...base, e5: 1 }, 'none', usable, true).word).toBe('卫生');
   });
-  it('署名完整 → 卫生（优先于指纹）', () => {
-    expect(mapVerdict({ ...base, e4: 1 }, 'complete', usable, true).word).toBe('卫生');
+  it('署名完整不再短路：E4 命中照样不卫生（P0 修正·364案）', () => {
+    expect(mapVerdict({ ...base, e4: 1 }, 'complete', usable, true).word).toBe('不卫生');
+  });
+  it('署名完整且无指纹命中 → 卫生（注记署名）', () => {
+    expect(mapVerdict(base, 'complete', usable, true).word).toBe('卫生');
   });
   it('内容不可用 → 休庭（优先于一切）', () => {
     expect(mapVerdict({ ...base, e4: 1 }, 'none', false, true).word).toBe('休庭');
@@ -72,6 +75,42 @@ describe('立案门槛（评定对象=完整文化内容整体）', () => {
     expect(parseDurationMinutes('本期 1小时02分')).toBe(60); // 无'分钟'字样时小时兜底
     expect(parseDurationMinutes('1小时05分钟')).toBe(65);
     expect(parseDurationMinutes('无时长信息')).toBe(null);
+  });
+});
+
+describe('归属预审（P0-1）', () => {
+  it('播客单集页面仅含简介 → 不通过，要求转录', async () => {
+    const { preReview, isSubstantialBody, parseEpisodeMinutes } = await import('../src/court/preReview');
+    expect(isSubstantialBody('这是一段简短的shownotes介绍，大约一百字。', 'podcast')).toBe(false);
+    const r = preReview({ url: 'https://www.xiaoyuzhoufm.com/episode/abc', text: '', fetched: { title: '第310期', text: '简短简介'.repeat(10) } });
+    expect(r.pass).toBe(false);
+    // 364案回归：含"相关单集列表"的长页面（5000+字、39分钟）也必须拦截
+    const dur = parseEpisodeMinutes('第364期 39 分钟 · 3天前');
+    expect(dur).toBe(39);
+    expect(isSubstantialBody('介绍文字'.repeat(1300), 'podcast', 39)).toBe(false); // 5200字 < 5850（39分钟×150）拦截
+    expect(isSubstantialBody('介绍文字'.repeat(1000), 'podcast', 39)).toBe(false); // 4000字 < 5850 拦截
+    expect(isSubstantialBody('节目转录正文'.repeat(2000), 'podcast', 39)).toBe(true);   // 8000字 ≥ 5850 通过
+    expect(r.completeness.hasSubstantialBody).toBe(false);
+  });
+  it('长转录稿/文章正文 → 通过', async () => {
+    const { preReview } = await import('../src/court/preReview');
+    const body = '这是完整的节目转录内容。'.repeat(600);
+    const r = preReview({ url: 'https://mp.weixin.qq.com/s/xyz', text: '', fetched: { title: '文章', text: body } });
+    expect(r.pass).toBe(true);
+  });
+  it('日期提取精确到年月日', async () => {
+    const { extractDate } = await import('../src/court/preReview');
+    expect(extractDate('发布时间：2026年8月17日 UTC').date).toBe('2026-08-17');
+    expect(extractDate('2025-08-06 something').precision).toBe('day');
+    expect(extractDate('2026年5月').precision).toBe('month');
+  });
+});
+
+describe('源质量闸门（P0-4）', () => {
+  it('闸门常量就位', async () => {
+    const { SOURCE_QUALITY_GATE } = await import('../src/court/evidence');
+    expect(SOURCE_QUALITY_GATE.minTextChars).toBeGreaterThanOrEqual(800);
+    expect(SOURCE_QUALITY_GATE.parkDomainWords.length).toBeGreaterThan(0);
   });
 });
 
