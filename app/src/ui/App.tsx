@@ -64,6 +64,7 @@ export function App(): React.ReactElement {
         if (!audioUrl) logSinkRef.current('立案', '小宇宙页面未内嵌音频地址');
       }
       if (!audioUrl) {
+        lastTranscribeErrorRef.current = '未能定位音频地址（当前支持 Apple Podcasts 与小宇宙单集链接）';
         logSinkRef.current('立案', '未能定位音频地址（该平台未提供可自动转录的音频通道）');
         return false;
       }
@@ -71,6 +72,7 @@ export function App(): React.ReactElement {
       const asrKind: 'groq' | 'glm' = s.asrKind === 'glm' ? 'glm' : 'groq';
       const asrKey = asrKind === 'glm' ? s.apiKey : s.groqApiKey;
       if (!asrKey) {
+        lastTranscribeErrorRef.current = asrKind === 'groq' ? '尚未配置 Groq Key——请到「设置 → 语音转录」填入并点击「保存」' : '尚未配置 GLM Key';
         logSinkRef.current('立案', '未配置 ASR Key（设置 → 语音转录）：无法自动转录');
         return false;
       }
@@ -181,6 +183,15 @@ export function App(): React.ReactElement {
           setRunning((r) => (r ? { ...r, stageIndex: 0 } : r));
           pushLog('立案', '页面仅含简介，本庭尝试自动转录音频以获取内容本体…');
           lastTranscribeErrorRef.current = null;
+          // 前置守卫：ASR 配置检查（提前暴露"没保存"问题，不浪费抓音频的时间）
+          const preAsrKind = s.asrKind === 'glm' ? 'glm' : 'groq';
+          const preAsrKey = preAsrKind === 'glm' ? s.apiKey : s.groqApiKey;
+          if (!preAsrKey) {
+            setMentalHygiene(
+              `自动转录需要${preAsrKind === 'groq' ? ' Groq Key' : ' GLM Key'}，但当前尚未配置。\n\n请前往「设置 → 语音转录」填入 Key 并点击「保存」，再重新提交。（console.groq.com/keys 可免费注册）`,
+            );
+            throw new Error('__MENTAL_HYGIENE__');
+          }
           const transcribed = await tryTranscribe(cf, rt, s);
           if (!transcribed) {
             const why = lastTranscribeErrorRef.current;
@@ -689,6 +700,14 @@ function Settings(): React.ReactElement {
     setSaved(true);
     setTimeout(() => setSaved(false), 1800);
   };
+  // 输入即保存（onChange 后静默持久化，防"填了没点保存"）
+  const setAndSave = (patch: Partial<typeof s>) => {
+    setS((prev: any) => {
+      const next = { ...prev, ...patch };
+      import('../store/local').then((m) => m.saveSettings(next));
+      return next;
+    });
+  };
 
   const test = async () => {
     setTesting(true);
@@ -809,16 +828,16 @@ function Settings(): React.ReactElement {
         <div className="desc">
           共享额度用尽或需更多次数，可<a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a>免费注册（2500 次额度），Key 填在下面。主模型为 DeepSeek / OpenAI 兼容端点时，请选择 Serper 作为搜索通道。
         </div>
-        <input style={{ marginTop: 8 }} type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="填入你在 serper.dev 的 Key（64 位，x- 开头无需处理）" />
+        <input style={{ marginTop: 8 }} type="password" value={s.serperApiKey} onChange={(e) => setAndSave({ serperApiKey: e.target.value })} placeholder="填入你在 serper.dev 的 Key（64 位，x- 开头无需处理）" />
       </div>
       <div className="field">
         <label>语音转录（播客单集自动转录）</label>
-        <select value={s.asrKind} onChange={(e) => setS({ ...s, asrKind: e.target.value as any })}>
+        <select value={s.asrKind} onChange={(e) => setAndSave({ asrKind: e.target.value as any })}>
           <option value="groq">Groq · whisper-large-v3（推荐，console.groq.com 免费注册）</option>
           <option value="glm">GLM ASR（复用上方 GLM Key，需 ASR 额度）</option>
         </select>
         {s.asrKind === 'groq' && (
-          <input style={{ marginTop: 8 }} type="password" value={s.groqApiKey} onChange={(e) => setS({ ...s, groqApiKey: e.target.value })} placeholder="填入 Groq Key（gsk_ 开头，API Keys 页面创建）" />
+          <input style={{ marginTop: 8 }} type="password" value={s.groqApiKey} onChange={(e) => setAndSave({ groqApiKey: e.target.value })} placeholder="填入 Groq Key（gsk_ 开头，API Keys 页面创建）" />
         )}
         <div className="desc">
           提交播客单集链接时，本庭自动定位音频并转录为内容本体。Groq：<a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys ↗</a>注册后在 API Keys 页创建（免费，whisper-large-v3）。音频经你的浏览器直连所选转录服务。
