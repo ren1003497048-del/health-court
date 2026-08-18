@@ -5,7 +5,7 @@
 export type EvidenceLevel = 'E1' | 'E2' | 'E3' | 'E4' | 'E5';
 
 export const EVIDENCE_LEVEL_INFO: Record<EvidenceLevel, { name: string; desc: string }> = {
-  E1: { name: '主题相同', desc: '都讲同一事件/人物（弱，公共素材）' },
+  E1: { name: '主题相同', desc: '仅用于检索召回定位，不单独作为判定依据（话题重合过于常见）' },
   E2: { name: '结构相同', desc: '章节、叙事顺序、详略取舍一致（中）' },
   E3: { name: '细节指纹', desc: '相同的独特细节：冷门案例、数据、类比、口误、例证组合（强）' },
   E4: { name: '错误传播', desc: '原文的事实错误/非常规解读（含机器转录错误）被复制（极强）' },
@@ -15,15 +15,16 @@ export const EVIDENCE_LEVEL_INFO: Record<EvidenceLevel, { name: string; desc: st
 export type VerdictWord = '不卫生' | '可能不卫生' | '卫生' | '休庭' | '不予受理';
 
 /**
- * 白话判据表（借鉴 podcastreview.github.io 框架，2026-08-19 用户拍板）：
- * 面向用户的判定说明直接用工作性语言，不再要求用户转译 E1-E5 字母。
- * 四判据：长距离顺序 / 罕见材料 / 例子组合 / 归因变化；同题、常识和单个事实重合不计。
+ * 白话判据表（2026-08-19 用户拍板）：
+ * 只看「展开方式」层面——同一话题本身不构成任何判定依据（话题重合是检索阶段的召回考量，
+ * 不在判决中露出）；判的是：对一个相对同一性的话题，两边怎么展开、怎么组织文本。
+ * 常识和单个事实的重合同样不计。
  */
 export const PLAIN_CRITERIA: Array<{ name: string; question: string; mapsTo: EvidenceLevel[] }> = [
-  { name: '长距离顺序', question: '两边的讲述是否在很长的距离上保持同一顺序（章节推进、案例先后）？', mapsTo: ['E2'] },
-  { name: '罕见材料', question: '是否出现同一个冷门案例、数据、怪词或错误（别处找不到的）？', mapsTo: ['E3', 'E4'] },
-  { name: '例子组合', question: '是否同一组例子以同样的组合方式出现（而非各讲各的）？', mapsTo: ['E3'] },
-  { name: '归因变化', question: '别人的话/经历/观点，是否被换成了自己的第一人称讲述？', mapsTo: ['E4', 'E3'] },
+  { name: '长距离顺序', question: '对同一个话题，两边的讲述是否在很长的距离上保持同一展开顺序（章节推进、案例先后）？', mapsTo: ['E2'] },
+  { name: '罕见材料', question: '展开中是否出现同一个冷门案例、数据、怪词或错误（别处找不到的）？', mapsTo: ['E3', 'E4'] },
+  { name: '例子组合', question: '是否同一组例子以同样的组合方式被组织进论述（而非各讲各的）？', mapsTo: ['E3'] },
+  { name: '归因变化', question: '展开中引用的他人的话/经历/观点，是否被换成了自己的第一人称讲述？', mapsTo: ['E4', 'E3'] },
 ];
 
 /** 证据等级 → 白话名（判决书用） */

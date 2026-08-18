@@ -754,7 +754,7 @@ function About(): React.ReactElement {
       </p>
       <h3>本庭看什么（四条判据）</h3>
       <p style={{ margin: '0 0 10px', fontSize: 14 }}>
-        同题、常识和单个事实的重合不计——只看以下四种痕迹：
+        话题本身的重合不构成判定依据——本庭只看同一话题下的展开方式与文本组织；常识和单个事实的重合同样不计：
       </p>
       <table className="table">
         <thead>
