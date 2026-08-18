@@ -17,6 +17,9 @@ export interface RunningState {
   sources: SourceDoc[];
   objection: string | null;
   shake: boolean;
+  /** 异议宣言队列（对质命中项，宣判前逐条展示） */
+  objectionQueue: string[];
+  objectionPlaying: boolean;
 }
 
 export function App(): React.ReactElement {
@@ -87,7 +90,7 @@ export function App(): React.ReactElement {
   const run = useCallback(async () => {
     setError(null);
     setVerdictDoc(null);
-    setRunning({ stageIndex: 0, logs: [], evidence: [], fingerprints: 0, sources: [], objection: null, shake: false });
+    setRunning({ stageIndex: 0, logs: [], evidence: [], fingerprints: 0, sources: [], objection: null, shake: false, objectionQueue: [], objectionPlaying: false });
     try {
       const { loadSettings } = await import('../store/local');
       const s = loadSettings();
@@ -125,27 +128,24 @@ export function App(): React.ReactElement {
       };
 
       const logs: RunningState['logs'] = [];
-      let objTimer: number | undefined;
       const pushLog = (stage: string, note: string) => {
         logSinkRef.current = pushLog;
         logs.push({ stage, note, at: new Date().toISOString() });
         const stageIdx = STAGES.indexOf(stage as any);
-        setRunning((r) =>
-          r
-            ? {
-                ...r,
-                logs: [...logs],
-                stageIndex: stageIdx >= 0 ? stageIdx : r.stageIndex,
-                // E3/E4 命中或指纹命中时演出「异议！」
-                objection: /E[34] 指纹命中|E4/.test(note) ? (note.includes('E4') ? '異議あり！！' : '異議あり！') : r.objection,
-                shake: /E4/.test(note) ? true : r.shake,
-              }
-            : r,
-        );
+        // E3/E4 命中 → 入异议队列（证据罗列前统一逐条展示）；E4 附加瞬时抖动
+        const hitMatch = note.match(/(E4|E3) 指纹命中/);
+        setRunning((r) => {
+          if (!r) return r;
+          const queue = hitMatch ? [...r.objectionQueue, `${hitMatch[1] === 'E4' ? '異議あり！！' : '異議あり！'}｜${note.replace(/^.*(E4|E3) 指纹命中：?/, '').slice(0, 60)}`] : r.objectionQueue;
+          return {
+            ...r,
+            logs: [...logs],
+            stageIndex: stageIdx >= 0 ? stageIdx : r.stageIndex,
+            objectionQueue: queue,
+            shake: hitMatch?.[1] === 'E4' ? true : r.shake,
+          };
+        });
         scrollLog();
-        if (/E[34] 指纹命中/.test(note)) {
-          objTimer = window.setTimeout(() => setRunning((r) => (r ? { ...r, objection: null } : r)), 1400);
-        }
       };
 
       const rt = { provider, fetcher, log: pushLog, evidence: [] as EvidenceItem[], sources: [] as SourceDoc[] };
@@ -195,6 +195,41 @@ export function App(): React.ReactElement {
       setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
       const evidence = await pipeline.crossExamination(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 4, evidence } : r));
+
+      // 异议宣言（证据罗列之前）：队列逐条播放，每条 2.6s，点击可跳过
+      {
+        const queue = rt.evidence
+          .filter((e) => e.level === 'E4' || e.level === 'E3')
+          .map((e) => `${e.level === 'E4' ? '異議あり！！' : '異議あり！'}｜${e.description.slice(0, 60)}`);
+        // 以对质日志命中的队列为准（若为空则用证据回填）
+        let finalQueue = queue;
+        setRunning((r) => (r ? { ...r, objectionQueue: r.objectionQueue.length ? r.objectionQueue : finalQueue, objectionPlaying: true } : r));
+        await new Promise<void>((resolve) => {
+          const step = (idx: number) => {
+            setRunning((r) => {
+              if (!r) return r;
+              const rest = r.objectionQueue.slice(Math.max(0, idx - 0));
+              return r;
+            });
+            // 简单顺序播放：每 2.6s 显示队列第 idx 条
+            const total = queue.length;
+            if (idx >= total) {
+              setRunning((r) => (r ? { ...r, objection: null, objectionPlaying: false } : r));
+              resolve();
+              return;
+            }
+            setRunning((r) => (r ? { ...r, objection: queue[idx] } : r));
+            window.setTimeout(() => step(idx + 1), 2600);
+          };
+          // 允许用户点击跳过：overlay onClick 结束播放
+          (window as any).__hcSkipObjection = () => {
+            setRunning((r) => (r ? { ...r, objection: null, objectionPlaying: false } : r));
+            resolve();
+          };
+          step(0);
+        });
+      }
+
       const doc = await pipeline.verdictStage(cf, rt, evidence);
       setVerdictDoc(doc);
       const { saveToArchive } = await import('../store/local');
@@ -239,10 +274,9 @@ export function App(): React.ReactElement {
             {mentalHygiene && (
         <div className="objection-overlay" style={{ pointerEvents: 'auto', background: 'rgba(250,246,238,0.96)' }} onClick={() => setMentalHygiene(null)}>
           <div style={{ background: '#fff', border: 'var(--border)', boxShadow: 'var(--shadow)', padding: '34px 38px', maxWidth: 640, margin: '0 20px', textAlign: 'center' }}>
-            <div style={{ fontSize: 40, marginBottom: 8 }}>🧠⚖️</div>
+            <div style={{ fontSize: 44, marginBottom: 10 }}>⚖️</div>
             <div style={{ fontFamily: 'var(--serif)', fontWeight: 900, fontSize: 26, marginBottom: 12 }}>请自行注意精神卫生</div>
             <p style={{ fontSize: 14.5, lineHeight: 1.9, margin: '0 0 16px', textAlign: 'left' }}>{mentalHygiene}</p>
-            <div className="footnote-box" style={{ marginBottom: 18 }}>我们生活在需要格外注意精神卫生的时代。</div>
             <button className="btn" onClick={() => setMentalHygiene(null)}>我知道了</button>
           </div>
         </div>
@@ -317,8 +351,15 @@ function Courtroom(props: {
   return (
     <>
       {running?.objection && (
-        <div className="objection-overlay">
-          <div className="objection-text">{running.objection}</div>
+        <div className="objection-overlay" style={{ pointerEvents: 'auto', cursor: 'pointer' }} onClick={() => { (window as any).__hcSkipObjection?.(); }}>
+          <div className="objection-text" style={{ fontSize: 'clamp(56px, 11vw, 130px)' }}>{String(running.objection).split('｜')[0]}</div>
+          <div style={{
+            fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 16, color: 'var(--ink)',
+            background: '#fff', border: 'var(--border)', boxShadow: 'var(--shadow-sm)',
+            padding: '10px 18px', maxWidth: 520, textAlign: 'center', lineHeight: 1.8,
+            transform: 'rotate(-2deg)',
+          }}>{String(running.objection).split('｜')[1] || ''}</div>
+          <div style={{ position: 'absolute', bottom: '12vh', fontSize: 13, color: 'var(--ink-soft)', letterSpacing: '0.2em' }}>点击任意处跳过</div>
         </div>
       )}
 
