@@ -41,6 +41,7 @@ export function App(): React.ReactElement {
 
   /** 播客单集自动转录：Apple→iTunes enclosure / 小宇宙→shownotes 内无音频则提示 */
   const logSinkRef = useRef<(stage: string, note: string) => void>(() => {});
+  const lastTranscribeErrorRef = useRef<string | null>(null);
   const tryTranscribe = async (cf: CaseFile, rt: any, s: any): Promise<boolean> => {
     try {
       const { itunesLookupEpisode, transcribeAudio } = await import('../providers/multi');
@@ -52,6 +53,15 @@ export function App(): React.ReactElement {
         audioUrl = meta?.enclosureUrl || '';
         if (meta?.podcastName) cf.target.author = cf.target.author || meta.podcastName;
         if (meta?.releaseDate) cf.target.date = cf.target.date || meta.releaseDate.slice(0, 10);
+      } else if (/xiaoyuzhoufm\.com\/episode/.test(cf.input.url || '')) {
+        // 小宇宙：单集页 HTML 内嵌音频 CDN 地址（media.xyzcdn.net，CORS 开放）
+        logSinkRef.current('立案', '小宇宙单集：从页面定位音频地址…');
+        const html = await (await fetch(cf.input.url!, { headers: { Accept: 'text/html' } })).text();
+        const m = html.match(/https:\/\/media\.xyzcdn\.net\/[^"']+\.m4a/) || html.match(/https:\/\/[^"']+\.m4a/);
+        audioUrl = m ? m[0] : '';
+        const pm = html.match(/"podcast":\s*\{[^}]*?"title":\s*"([^"]{2,40})"/) || html.match(/<title>([^<]{2,40})<\/title>/);
+        if (pm) cf.target.author = cf.target.author || pm[1];
+        if (!audioUrl) logSinkRef.current('立案', '小宇宙页面未内嵌音频地址');
       }
       if (!audioUrl) {
         logSinkRef.current('立案', '未能定位音频地址（该平台未提供可自动转录的音频通道）');
@@ -76,6 +86,7 @@ export function App(): React.ReactElement {
       logSinkRef.current('立案', `转录完成：${fullText.length} 字符，${segments.length} 段`);
       return true;
     } catch (e: any) {
+      lastTranscribeErrorRef.current = String(e.message).slice(0, 160);
       logSinkRef.current('立案', `自动转录失败：${String(e.message).slice(0, 120)}`);
       return false;
     }
@@ -169,9 +180,13 @@ export function App(): React.ReactElement {
         if (!fail.completeness.hasSubstantialBody && fail.attributionChain.platform) {
           setRunning((r) => (r ? { ...r, stageIndex: 0 } : r));
           pushLog('立案', '页面仅含简介，本庭尝试自动转录音频以获取内容本体…');
+          lastTranscribeErrorRef.current = null;
           const transcribed = await tryTranscribe(cf, rt, s);
           if (!transcribed) {
-            setMentalHygiene(fail.failNote || '');
+            const why = lastTranscribeErrorRef.current;
+            setMentalHygiene(
+              (why ? `自动转录未成功：${why}\n\n` : '') + (fail.failNote || ''),
+            );
             throw new Error('__MENTAL_HYGIENE__');
           }
           // 重新预审
@@ -267,7 +282,7 @@ export function App(): React.ReactElement {
           </nav>
         </div>
         <p className="naming-footnote-mini">
-          <span className="typo-mark">*「法庭」应作「服务队」</span>——本庭之名源自一次被复制的机器转录错误（health corps → health court）。一个错误能被复制，就能被发现。
+          <span className="typo-mark">*「法庭」应作「服务队」</span>——一个被复制的转录错误，成就了本庭之名。
         </p>
       </header>
 
@@ -275,7 +290,8 @@ export function App(): React.ReactElement {
         <div className="objection-overlay" style={{ pointerEvents: 'auto', background: 'rgba(250,246,238,0.96)' }} onClick={() => setMentalHygiene(null)}>
           <div style={{ background: '#fff', border: 'var(--border)', boxShadow: 'var(--shadow)', padding: '34px 38px', maxWidth: 640, margin: '0 20px', textAlign: 'center' }}>
             <div style={{ fontSize: 44, marginBottom: 10 }}>⚖️</div>
-            <div style={{ fontFamily: 'var(--serif)', fontWeight: 900, fontSize: 26, marginBottom: 12 }}>请自行注意精神卫生</div>
+            <div style={{ fontFamily: 'var(--serif)', fontWeight: 900, fontSize: 26, marginBottom: 4 }}>请自行注意精神卫生</div>
+            <div style={{ fontSize: 13, color: 'var(--ink-soft)', marginBottom: 14, letterSpacing: '0.1em' }}>本庭无法受理当前提交的材料</div>
             <p style={{ fontSize: 14.5, lineHeight: 1.9, margin: '0 0 16px', textAlign: 'left' }}>{mentalHygiene}</p>
             <button className="btn" onClick={() => setMentalHygiene(null)}>我知道了</button>
           </div>
@@ -302,8 +318,8 @@ export function App(): React.ReactElement {
       </main>
 
       <footer className="footer">
-        <div>卫生法庭 HEALTH COURT* · 机制严谨 × 呈现漫画 · 只从你的浏览器发出请求</div>
-        <div>{NAMING_FOOTNOTE.slice(0, 80)}…（全文见「关于」页）</div>
+        <div>卫生法庭 HEALTH COURT* · 所有数据仅存于你的浏览器</div>
+        <div>*本庭之名来自一个被复制的转录错误——详见「关于」</div>
       </footer>
     </>
   );
@@ -364,11 +380,11 @@ function Courtroom(props: {
       )}
 
       <section className={'panel' + (running?.shake ? ' shake' : '')}>
-        <h2 className="panel-title">提交案件</h2>
+        <h2 className="panel-title">材料提交</h2>
         <div className="input-row">
           <input
             className="input-main"
-            placeholder="链接：播客单集 / 文章 / 有转录稿的节目页（首选，本庭自动取证与转录）"
+            placeholder="粘贴内容链接（播客单集、文章均可，支持自动取证与转录）"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={!!running}
@@ -377,7 +393,7 @@ function Courtroom(props: {
         <div className="input-row" style={{ marginTop: 10 }}>
           <textarea
             className="input-main"
-            placeholder="（可选）粘贴正文或转录稿——若你手头有现成文稿可跳过本庭的自动转录；粘贴文本时建议附上作者与发表信息（含年月日）"
+            placeholder="或直接粘贴正文（粘贴文本请附上作者与发表日期，便于归属核验）"
             value={bodyText}
             onChange={(e) => setBodyText(e.target.value)}
             disabled={!!running}
@@ -385,13 +401,12 @@ function Courtroom(props: {
         </div>
         <div className="input-row" style={{ marginTop: 10 }}>
           <button className="btn btn-red" onClick={run} disabled={!!running || (!input.trim() && !bodyText.trim())}>
-            {running ? '开庭中…' : '开 庭'}
+            {running ? '核查中…' : '提 交 材 料'}
           </button>
         </div>
         <p className="hint">
-          评定对象须为相对独立、自身完整的文化内容整体：文字不少于 500 字，或音频不少于 5 分钟。
-          播客单集若无现成转录稿，本庭将尝试自动转录（需在设置中配置 ASR）。
-          检索面覆盖境外源时，建议在可访问国际网络的环境下使用，结果更全面。
+          支持完整的文化内容：文章、播客单集、节目转录稿。文字不少于 500 字，音频不少于 5 分钟。
+          核查会搜索境外来源，建议在网络畅通的环境下使用。
         </p>
         {error && (
           <div className="key-warn" style={{ borderColor: 'var(--vermillion)', background: '#fbe3df' }}>
@@ -402,7 +417,7 @@ function Courtroom(props: {
 
       {running && (
         <section className="panel">
-          <h2 className="panel-title">庭审进行中</h2>
+          <h2 className="panel-title">核查进行中</h2>
           <div className="stage-bar">
             {STAGES.map((s, i) => (
               <div
