@@ -178,28 +178,53 @@ export async function locateEpisodeAudio(
   const isApple = /podcasts\.apple\.com/.test(url);
   const isXyzfm = /xiaoyuzhoufm\.com\/(episode|podcast)/.test(url);
 
-  // —— 小宇宙：单集页经 Jina 读取，提取 track 地址与节目名 ——
+  // —— 小宇宙：三级降级（v2.2.5 修复：Jina 对部分单集页渲染不完整，7.5KB 壳页无音频地址）——
+  // ① 浏览器直 fetch 单集页（CORS 实测开放：ACAO 回显 Origin；原始 HTML ~200KB 含音频地址）
+  // ② Jina 中继 ③ 再试一次带 UA 的直 fetch
   if (isXyzfm) {
+    const pickAudio = (html: string): string | null => {
+      const m = html.match(/https:\/\/(?:media\.xyzcdn\.net|dts-api\.xiaoyuzhoufm\.com\/track)\/[^"'\s\\]+/);
+      return m ? m[0] : null;
+    };
+    const pickShow = (html: string): string | undefined => {
+      const pm = html.match(/来自播客《([^》]{2,40})》/) || html.match(/"podcast"\s*:\s*\{[^}]*?"title"\s*:\s*"([^"]{2,40})"/) || html.match(/<title>([^<{]{2,60}?)\s*-\s*[^<]{0,20}\|\s*小宇宙/);
+      return pm ? pm[1].trim() : undefined;
+    };
+    // ① 直连（浏览器环境）
+    try {
+      const res = await fetchImpl(url, { headers: { Accept: 'text/html' } });
+      if (res.ok) {
+        const html = await res.text();
+        const audio = pickAudio(html);
+        if (audio) {
+          log('小宇宙直连取页成功（原始 HTML 含音频地址）');
+          return {
+            ok: true,
+            audio: { audioUrl: audio, source: '小宇宙（直连）', podcastName: pickShow(html) },
+          };
+        }
+        log('小宇宙直连页面未含音频地址（可能被反爬或渲染缺失），转 Jina 中继…');
+      }
+    } catch (e: any) {
+      log(`小宇宙直连失败（${String(e?.message || e).slice(0, 60)}），转 Jina 中继…`);
+    }
+    // ② Jina 中继（Node/无CORS环境或直连被拦时）
     const headers: Record<string, string> = { Accept: 'text/plain' };
     if (opts.jinaKey) headers.Authorization = `Bearer ${opts.jinaKey}`;
     try {
       const res = await fetchImpl(`https://r.jina.ai/${url}`, { headers });
       const text = await res.text();
-      const m = text.match(/https:\/\/(?:media\.xyzcdn\.net|dts-api\.xiaoyuzhoufm\.com\/track)\/[^"'\s\\]+/);
-      if (m) {
+      const audio = pickAudio(text);
+      if (audio) {
         const pm = text.match(/来自播客《([^》]{2,40})》/) || text.match(/^Title:\s*(.+)$/m);
         return {
           ok: true,
-          audio: {
-            audioUrl: m[0],
-            source: '小宇宙（经 Jina 中继）',
-            podcastName: pm ? pm[1].trim() : undefined,
-          },
+          audio: { audioUrl: audio, source: '小宇宙（经 Jina 中继）', podcastName: pm ? pm[1].trim() : undefined },
         };
       }
-      return { ok: false, reason: '小宇宙页面（经 Jina 读取）中未找到音频地址' };
+      return { ok: false, reason: '小宇宙页面（直连+Jina 均未找到音频地址——页面可能需要登录或已下架）' };
     } catch (e: any) {
-      return { ok: false, reason: `[读取小宇宙页面(经Jina)] ${String(e?.message || e).slice(0, 120)}` };
+      return { ok: false, reason: `[读取小宇宙页面] 直连与 Jina 均失败：${String(e?.message || e).slice(0, 120)}` };
     }
   }
 

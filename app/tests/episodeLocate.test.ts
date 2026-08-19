@@ -163,14 +163,46 @@ describe('locateEpisodeAudio 集成（mock fetch）', () => {
     }
   });
 
-  it('小宇宙链接：经 Jina 提取 track 地址', async () => {
-    const fake = (async () => ({
-      ok: true,
-      text: async () => 'Title: 第1期 | 忽左忽右\n\nhttps://dts-api.xiaoyuzhoufm.com/track/xyz/abc 音频链接',
-    })) as any;
+  it('小宇宙链接：直连页面含音频地址 → 直连命中（v2.2.5 三级降级）', async () => {
+    const fake = (async (url: string) => {
+      if (url.startsWith('https://www.xiaoyuzhoufm.com')) {
+        return {
+          ok: true,
+          text: async () =>
+            '<html><head><title>第1期 | 播客名 | 小宇宙</title></head><body>script: {"enclosure":"https://media.xyzcdn.net/abc/def.m4a"}</body></html>',
+        };
+      }
+      return { ok: true, text: async () => 'should not reach jina' };
+    }) as any;
+    const logs: string[] = [];
+    const r = await locateEpisodeAudio('https://www.xiaoyuzhoufm.com/episode/abc123', { fetchImpl: fake, log: (m) => logs.push(m) });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.audio.audioUrl).toBe('https://media.xyzcdn.net/abc/def.m4a');
+      expect(r.audio.source).toContain('直连');
+    }
+    expect(logs.some((l) => l.includes('直连取页成功'))).toBe(true);
+  });
+
+  it('小宇宙链接：直连无音频（渲染缺失形态）→ 降级 Jina 命中', async () => {
+    const fake = (async (url: string) => {
+      if (url.startsWith('https://www.xiaoyuzhoufm.com')) {
+        return { ok: true, text: async () => '<html>shell without audio</html>' };
+      }
+      if (url.startsWith('https://r.jina.ai/')) {
+        return {
+          ok: true,
+          text: async () => 'Title: 第1期\n\nhttps://dts-api.xiaoyuzhoufm.com/track/xyz/abc 音频链接',
+        };
+      }
+      return { ok: true, text: async () => '' };
+    }) as any;
     const r = await locateEpisodeAudio('https://www.xiaoyuzhoufm.com/episode/abc123', { fetchImpl: fake });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.audio.audioUrl).toBe('https://dts-api.xiaoyuzhoufm.com/track/xyz/abc');
+    if (r.ok) {
+      expect(r.audio.audioUrl).toBe('https://dts-api.xiaoyuzhoufm.com/track/xyz/abc');
+      expect(r.audio.source).toContain('Jina');
+    }
   });
 
   it('全链路失败 → 带原因的失败结果', async () => {
