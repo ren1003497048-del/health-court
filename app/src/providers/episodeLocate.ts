@@ -203,6 +203,29 @@ export async function locateEpisodeAudio(
     }
   }
 
+  // —— 通用播客单集页（v2.2.4）：Spotify/getpodcast/musixmatch/官方站等——经 Jina 读页面找音频 CDN 直链 ——
+  // 注：Apple 链接走下方专用通道（lookup API+RSS 更强），此处只接其他平台的播客单集页
+  const genericPodcastPage = /open\.spotify\.com\/episode|getpodcast\.com|musixmatch\.com\/podcast|deezer\.com\/episode|podtail\.com|podcast-addict\.com|podcastrex\.com/.test(url);
+  if (genericPodcastPage) {
+    const headers: Record<string, string> = { Accept: 'text/plain' };
+    if (opts.jinaKey) headers.Authorization = `Bearer ${opts.jinaKey}`;
+    try {
+      const res = await fetchImpl(`https://r.jina.ai/${url}`, { headers });
+      const text = await res.text();
+      // 音频 CDN 直链形态：megaphone/pdst.fm（TRIH 系）、xyzcdn（小宇宙系）、audio empire 等
+      const m = text.match(/https:\/\/(?:traffic\.megaphone\.fm|pdst\.fm|dts\.megaphone\.fm|pdst\.fm\/e)[^\s\"'\\)\]]+/);
+      if (m) {
+        return {
+          ok: true,
+          audio: { audioUrl: m[0], source: '播客页内嵌音频直链（经 Jina）' },
+        };
+      }
+      return { ok: false, reason: '播客页面（经 Jina 读取）未找到音频直链（可能是纯壳页或需要 JS 渲染）' };
+    } catch (e: any) {
+      return { ok: false, reason: `[读取播客页(经Jina)] ${String(e?.message || e).slice(0, 100)}` };
+    }
+  }
+
   // —— Apple：身份提取 → lookup 直连 → lookup Jina 中继 → RSS 匹配 ——
   if (isApple) {
     const ids = parseAppleIds(url);

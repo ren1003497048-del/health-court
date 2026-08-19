@@ -138,7 +138,8 @@ export function isMirrorOrGenericSource(src: SourceLike, target: TargetLike): {
   if (GENERIC_PLATFORM_TITLES.test(t)) {
     return { mirror: false, generic: true, note: '通用平台壳页面（无独立内容）' };
   }
-  // 同域镜像
+  // 同域镜像（v2.2.4 修正）：同域 ≠ 镜像——播客平台（Apple/Spotify/小宇宙）上亿单集共域。
+  // 真镜像 = 同平台上的同一单集：episode id 相同（?i=）或同节目 id（/id数字）且标题归一化后一致。
   try {
     if (target.url) {
       const d = (u: string) => {
@@ -148,8 +149,17 @@ export function isMirrorOrGenericSource(src: SourceLike, target: TargetLike): {
           return '';
         }
       };
-      if (d(src.url) && d(src.url) === d(target.url)) {
-        return { mirror: true, generic: false, note: '与目标同域' };
+      const sameHost = d(src.url) && d(src.url) === d(target.url);
+      if (sameHost) {
+        const epId = (u: string) => (u.match(/[?&]i=(\d+)/) || [])[1] || '';
+        const podId = (u: string) => (u.match(/\/id(\d+)/) || [])[1] || '';
+        if (epId(src.url) && epId(src.url) === epId(target.url)) {
+          return { mirror: true, generic: false, note: '同一单集（episode id 相同）' };
+        }
+        if (podId(src.url) && podId(src.url) === podId(target.url)) {
+          return { mirror: true, generic: false, note: '同一节目（podcast id 相同）' };
+        }
+        // 同域但不同节目/单集 → 不是镜像，放行（走后续标题/作者检查）
       }
     }
   } catch { /* ignore */ }

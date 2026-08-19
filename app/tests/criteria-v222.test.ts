@@ -75,3 +75,53 @@ describe('v2.2.3 R1b 播客定向触发条件', () => {
     expect(isPodcast('article', 'https://mp.weixin.qq.com/s/abc')).toBe(false);
   });
 });
+
+
+describe('v2.2.4 同域镜像修正（71CO8V 案：TRIH Apple 单集被误杀）', () => {
+  // 复刻修正后的判定逻辑
+  const mirrorByHost = (srcUrl: string, tgtUrl: string) => {
+    const d = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+    if (!(d(srcUrl) && d(srcUrl) === d(tgtUrl))) return false;
+    const epId = (u: string) => (u.match(/[?&]i=(\d+)/) || [])[1] || '';
+    const podId = (u: string) => (u.match(/\/id(\d+)/) || [])[1] || '';
+    return (epId(srcUrl) && epId(srcUrl) === epId(tgtUrl)) || (podId(srcUrl) && podId(srcUrl) === podId(tgtUrl));
+  };
+  it('同 Apple 域但不同 podcast id（TRIH vs 独树不成林）→ 不是镜像', () => {
+    expect(mirrorByHost(
+      'https://podcasts.apple.com/us/podcast/the-ku-klux-klan-birth-of-a-nation-part-3/id1537788786?i=1000755745457',
+      'https://podcasts.apple.com/cn/podcast/324/id1711052890?i=1000758498673',
+    )).toBe(false);
+  });
+  it('同域同 episode id → 镜像', () => {
+    expect(mirrorByHost(
+      'https://podcasts.apple.com/us/podcast/foo/id1711052890?i=1000758498673',
+      'https://podcasts.apple.com/cn/podcast/324/id1711052890?i=1000758498673',
+    )).toBe(true);
+  });
+  it('同域同 podcast id → 镜像（同节目）', () => {
+    expect(mirrorByHost(
+      'https://podcasts.apple.com/us/podcast/365/id1711052890',
+      'https://podcasts.apple.com/cn/podcast/324/id1711052890',
+    )).toBe(true);
+  });
+  it('跨域（Spotify vs Apple）→ 域检查不判镜像（交给作者名检查）', () => {
+    expect(mirrorByHost(
+      'https://open.spotify.com/episode/abc',
+      'https://podcasts.apple.com/cn/podcast/324/id1711052890',
+    )).toBe(false);
+  });
+});
+
+describe('v2.2.4 R1b 英文守卫', () => {
+  const ok = (s: string) => {
+    const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length;
+    const enWords = (s.match(/[A-Za-z]{4,}/g) || []).length;
+    return s.length > 10 && /podcast/i.test(s) && (cjk === 0 || enWords >= 3);
+  };
+  it('中文查询（71CO8V 案形态"3K党 podcast"）被拒', () => {
+    expect(ok('3K党 podcast')).toBe(false);
+  });
+  it('英文合规查询通过', () => {
+    expect(ok('"three iterations" Ku Klux Klan 1866 1915 podcast')).toBe(true);
+  });
+});

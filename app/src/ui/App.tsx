@@ -134,7 +134,7 @@ export function App(): React.ReactElement {
     const { locateEpisodeAudio } = await import('../providers/episodeLocate');
     const { transcribeAudioUrl } = await import('../pipeline/transcribe');
     const pool = (rt.sources as any[])
-      .filter((src) => /xiaoyuzhoufm\.com\/episode|podcasts\.apple\.com.*\?i=/.test(src.url || ''))
+      .filter((src) => /xiaoyuzhoufm\.com\/episode|podcasts\.apple\.com.*\?i=|open\.spotify\.com\/episode|getpodcast\.com|musixmatch\.com\/podcast|deezer\.com\/episode|podtail\.com|podcast-addict\.com|podcastrex\.com/.test(src.url || ''))
       .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
       .slice(0, maxCount);
     for (const src of pool) {

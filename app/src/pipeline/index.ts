@@ -322,13 +322,32 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     try {
       const pq = await chatJson<any>(
         rt.provider.chat,
-        'You craft search queries to find ENGLISH-LANGUAGE PODCAST EPISODES that a Chinese podcast episode may have drawn from. Given the episode profile, output 2-3 queries, each combining: the single most DISTINCTIVE narrative specifics of this episode (a named event, work, person, or a distinctive framing like "three waves of X") + the word podcast. DO NOT output generic encyclopedic queries ("history of X") - they never find podcast episodes. Output only JSON: {"queries":["..."]}',
+        'You craft search queries to find ENGLISH-LANGUAGE PODCAST EPISODES that a Chinese podcast episode may have drawn from. RULES: (1) Queries MUST be in ENGLISH only - translate every concept; a Chinese query finds Chinese reposts, never the original English podcast. (2) Each query combines the single most DISTINCTIVE narrative specifics of this episode (a named event, work, person, or a distinctive framing like "three iterations of X") + the word podcast. (3) DO NOT output generic encyclopedic queries ("history of X") - they never find podcast episodes. Good example: \"three iterations\" Ku Klux Klan 1866 1915 podcast. Bad example: 3K党 podcast (Chinese, generic). Output only JSON: {"queries":["english query 1","english query 2"]}',
         `单集画像：主题域=${cf.profile.topicDomain}\n核心论点：${cf.profile.coreClaims.join('；')}\n实体：${cf.profile.entities.join('；')}\n大纲：${cf.profile.outline.join('；')}\n目标标题：${cf.target.title}`,
         { maxTokens: 500 },
       );
-      const pqs = ((pq.queries || []) as string[]).map(String).filter((s) => s.length > 10).slice(0, 3);
-      pqs.forEach((s, i) => queries.splice(1 + i, 0, { tag: `R1b 播客定向`, q: s }));
-      if (pqs.length) rt.log('检索', `R1b 播客定向检索式 ×${pqs.length}：${pqs.join(' ｜ ').slice(0, 120)}`);
+      // v2.2.4 确定性守卫：查询必须以英文为主（中文字符<30%），且含 podcast 意图词——不信 LLM 的自觉
+      const pqs = ((pq.queries || []) as string[])
+        .map(String)
+        .filter((s) => s.length > 10)
+        .filter((s) => {
+          const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length;
+          const enWords = (s.match(/[A-Za-z]{4,}/g) || []).length;
+          // 含中文的查询必须是"英文实质为主"（≥3 个英文长词），否则拒——"3K党 podcast"这种会搜回中文源
+          return /podcast/i.test(s) && (cjk === 0 || enWords >= 3);
+        })
+        .slice(0, 3);
+      if (pqs.length) {
+        pqs.forEach((s, i) => queries.splice(1 + i, 0, { tag: `R1b 播客定向`, q: s }));
+        rt.log('检索', `R1b 播客定向检索式 ×${pqs.length}：${pqs.join(' ｜ ').slice(0, 120)}`);
+      } else {
+        // 兜底：画像实体中的英文专名 + 框架词 + podcast
+        const enEnts = (cf.profile?.entities || []).filter((e) => /[A-Za-z]{4,}/.test(e)).slice(0, 3).join(' ');
+        if (enEnts) {
+          queries.splice(1, 0, { tag: 'R1b 播客定向', q: `${enEnts} podcast` });
+          rt.log('检索', `R1b 兜底检索式（LLM 输出不合规，用画像英文实体）：${enEnts} podcast`);
+        }
+      }
     } catch (e: any) {
       rt.log('检索', `R1b 播客定向构造失败（${e.message.slice(0, 60)}），跳过`);
     }
@@ -373,12 +392,17 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       continue;
     }
     // v2.2 补充：源标题与目标标题高度相似（同节目其他单集/同内容转发）→ 疑似镜像
+    // v2.2.4：目标作者名（节目名）在源标题或摘要中出现 → 跨平台自镜像（71CO8V案：目标Spotify镜像入卷）
     const tgtTitle = (cf.target.title || '').replace(/^\d{1,4}\s*[-—－]\s*/, '');
     const srcTitle = (c.doc.title || '').replace(/^\d{1,4}\s*[-—－]\s*/, '');
     const tKey = tgtTitle.slice(0, 18);
-    if (tKey.length >= 8 && srcTitle.includes(tKey)) {
-      mirrorNotes.push(`${c.doc.title.slice(0, 50)}（标题与目标同源）`);
-      rejected.push({ title: c.doc.title, reason: '标题与目标高度相似（同节目单集/转发）' });
+    const selfNameHit = (() => {
+      const names = [cf.target.author, (cf.target.title || '').split(' - ').filter((s) => s.trim().length >= 4)[1]].filter(Boolean) as string[];
+      return names.some((nm) => nm && nm.length >= 4 && (srcTitle.includes(nm) || (c.doc.snippet || '').slice(0, 300).includes(nm)));
+    })();
+    if ((tKey.length >= 8 && srcTitle.includes(tKey)) || selfNameHit) {
+      mirrorNotes.push(`${c.doc.title.slice(0, 50)}（标题/作者与目标同源）`);
+      rejected.push({ title: c.doc.title, reason: selfNameHit ? `含目标节目名「${cf.target.author}」——目标自身的分发镜像` : '标题与目标高度相似（同节目单集/转发）' });
       continue;
     }
     filtered.push(c);
