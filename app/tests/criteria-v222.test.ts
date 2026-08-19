@@ -47,3 +47,31 @@ describe('v2.2.2 引文段落守卫（细比对）', () => {
     expect(passageOk('一句。两句。三句。', 'Long enough source sentence one. Second source sentence here too.')).toBe(false);
   });
 });
+
+
+describe('v2.2.3 引文去重（FDLMYH 案 FP4/FP9 教训）', () => {
+  // 复刻管线 discipline 的去重逻辑（normalize 后互相包含判重）
+  const normalize = (s: string) => s.replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)).replace(/[，。、；：？！""''「」『』（）()《》…—\-·,.;:?!"'\s]/g, '').toLowerCase();
+  const isDup = (a: string, b: string) => {
+    const na = normalize(a); const nb = normalize(b);
+    return na === nb || na.includes(nb) || nb.includes(na);
+  };
+  it('FP4/FP9 同引文（飘/Gone with the wind）互相包含 → 判重', () => {
+    const fp4 = '这就是那个电影，飘Gone with the wind，呈现的那个世界。';
+    const fp9 = '这就是那个电影，飘Gone with the wind，呈现的那个世界。';
+    expect(isDup(fp4, fp9)).toBe(true);
+  });
+  it('不同引文不误伤', () => {
+    expect(isDup('第一代三K党诞生在1866年', '这是一个不断扩权的联邦政府')).toBe(false);
+  });
+});
+
+describe('v2.2.3 R1b 播客定向触发条件', () => {
+  it('contentType=podcast_with_transcript 或链接来自播客平台 → 触发', () => {
+    const isPodcast = (ct: string, url: string) => /podcast/.test(ct || '') || /xiaoyuzhoufm|podcasts\.apple/.test(url || '');
+    expect(isPodcast('podcast_with_transcript', '')).toBe(true);
+    expect(isPodcast('', 'https://podcasts.apple.com/cn/podcast/x/id1')).toBe(true);
+    expect(isPodcast('', 'https://www.xiaoyuzhoufm.com/episode/abc')).toBe(true);
+    expect(isPodcast('article', 'https://mp.weixin.qq.com/s/abc')).toBe(false);
+  });
+});

@@ -60,12 +60,24 @@ export function applyFingerprintDiscipline(
   const prog = opts.programName ? normalize(opts.programName) : '';
   const epiTitle = opts.episodeTitle ? normalize(opts.episodeTitle) : '';
 
+  const seenNorms: string[] = [];
   for (const fp of fps) {
     const q = fp.targetQuote;
     const n = effectiveLen(q);
     const reason = rejectReason(fp, n, q, prog, epiTitle, targetText);
-    if (reason) rejected.push({ fingerprint: fp, reason });
-    else kept.push(fp);
+    if (reason) {
+      rejected.push({ fingerprint: fp, reason });
+      continue;
+    }
+    // v2.2.3 引文去重：归一化引文相同或互相包含 → 只留首条（FDLMYH 案 FP4/FP9 同引文双命中教训）
+    const nq = normalize(q);
+    const dupOf = seenNorms.find((sn) => sn.includes(nq) || nq.includes(sn));
+    if (dupOf) {
+      rejected.push({ fingerprint: fp, reason: '引文与已保留指纹重复或互相包含' });
+      continue;
+    }
+    seenNorms.push(nq);
+    kept.push(fp);
   }
   return { kept, rejected };
 }

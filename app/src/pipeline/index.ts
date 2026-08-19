@@ -315,6 +315,24 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     queries.unshift({ tag: 'R0 标题', q: titleQuery });
     rt.log('检索', `R0 标题检索式（英文）：${titleQuery}`);
   }
+  // R1b 播客定向轮（v2.2.3，FDLMYH 案根因修复）：目标内容是播客时，源大概率也是播客。
+  // 用画像里最独特的叙事细节（不是通史词）+ podcast 意图词构造检索式——通史式查询永远搜不到播客单集。
+  const isPodcast = /podcast/.test(cf.target.contentType || '') || /xiaoyuzhoufm|podcasts\.apple/.test(cf.input.url || '');
+  if (isPodcast && cf.profile) {
+    try {
+      const pq = await chatJson<any>(
+        rt.provider.chat,
+        'You craft search queries to find ENGLISH-LANGUAGE PODCAST EPISODES that a Chinese podcast episode may have drawn from. Given the episode profile, output 2-3 queries, each combining: the single most DISTINCTIVE narrative specifics of this episode (a named event, work, person, or a distinctive framing like "three waves of X") + the word podcast. DO NOT output generic encyclopedic queries ("history of X") - they never find podcast episodes. Output only JSON: {"queries":["..."]}',
+        `单集画像：主题域=${cf.profile.topicDomain}\n核心论点：${cf.profile.coreClaims.join('；')}\n实体：${cf.profile.entities.join('；')}\n大纲：${cf.profile.outline.join('；')}\n目标标题：${cf.target.title}`,
+        { maxTokens: 500 },
+      );
+      const pqs = ((pq.queries || []) as string[]).map(String).filter((s) => s.length > 10).slice(0, 3);
+      pqs.forEach((s, i) => queries.splice(1 + i, 0, { tag: `R1b 播客定向`, q: s }));
+      if (pqs.length) rt.log('检索', `R1b 播客定向检索式 ×${pqs.length}：${pqs.join(' ｜ ').slice(0, 120)}`);
+    } catch (e: any) {
+      rt.log('检索', `R1b 播客定向构造失败（${e.message.slice(0, 60)}），跳过`);
+    }
+  }
   rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索（目标候选 ≥8）…`);
 
   const seen = new Set<string>();
