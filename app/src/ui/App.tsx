@@ -56,43 +56,32 @@ export function App(): React.ReactElement {
       return `[${step}] ${raw.slice(0, 120)}${hint}`;
     };
     try {
-      const { itunesLookupEpisode, transcribeAudio } = await import('../providers/multi');
+      const { transcribeAudio } = await import('../providers/multi');
       const { transcribeAudioUrl } = await import('../pipeline/transcribe');
+      const { locateEpisodeAudio } = await import('../providers/episodeLocate');
       let audioUrl = '';
       let meta: any = null;
-      if (/podcasts\.apple\.com/.test(cf.input.url || '')) {
-        try {
-          meta = await itunesLookupEpisode(cf.input.url!);
-        } catch (e: any) {
-          lastTranscribeErrorRef.current = netErr('查询 iTunes 音频目录', e);
-          logSinkRef.current('立案', lastTranscribeErrorRef.current);
+      if (/podcasts\.apple\.com|xiaoyuzhoufm\.com\/(episode|podcast)/.test(cf.input.url || '')) {
+        logSinkRef.current('立案', '跨平台定位单集音频（目录查询 → Jina 中继 → RSS 匹配）…');
+        const located = await locateEpisodeAudio(cf.input.url!, {
+          jinaKey: s.jinaApiKey || undefined,
+          log: (m) => logSinkRef.current('立案', m),
+        });
+        if (!located.ok) {
+          lastTranscribeErrorRef.current = located.reason;
+          logSinkRef.current('立案', `音频定位失败：${located.reason}`);
           return false;
         }
-        audioUrl = meta?.enclosureUrl || '';
+        audioUrl = located.audio.audioUrl;
+        meta = {
+          podcastName: located.audio.podcastName,
+          durationMs: located.audio.durationMs || 0,
+          releaseDate: located.audio.releaseDate,
+          source: located.audio.source,
+        };
+        logSinkRef.current('立案', `定位音频成功（来源：${located.audio.source}）`);
         if (meta?.podcastName) cf.target.author = cf.target.author || meta.podcastName;
-        if (meta?.releaseDate) cf.target.date = cf.target.date || meta.releaseDate.slice(0, 10);
-        if (!audioUrl) {
-          lastTranscribeErrorRef.current = 'iTunes 目录中未找到该单集的音频地址（单集可能已下架或地区限制）';
-          return false;
-        }
-      } else if (/xiaoyuzhoufm\.com\/episode/.test(cf.input.url || '')) {
-        // 小宇宙：单集页 HTML 内嵌音频 CDN 地址（media.xyzcdn.net，CORS 开放）
-        logSinkRef.current('立案', '小宇宙单集：从页面定位音频地址…');
-        try {
-          const html = await (await fetch(cf.input.url!, { headers: { Accept: 'text/html' } })).text();
-          const m = html.match(/https:\/\/media\.xyzcdn\.net\/[^"']+\.m4a/) || html.match(/https:\/\/[^"']+\.m4a/);
-          audioUrl = m ? m[0] : '';
-          const pm = html.match(/"podcast":\s*\{[^}]*?"title":\s*"([^"]{2,40})"/) || html.match(/<title>([^<]{2,40})<\/title>/);
-          if (pm) cf.target.author = cf.target.author || pm[1];
-        } catch (e: any) {
-          lastTranscribeErrorRef.current = netErr('抓取小宇宙页面', e);
-          logSinkRef.current('立案', lastTranscribeErrorRef.current);
-          return false;
-        }
-        if (!audioUrl) {
-          lastTranscribeErrorRef.current = '小宇宙页面未内嵌音频地址';
-          logSinkRef.current('立案', '小宇宙页面未内嵌音频地址');
-        }
+        if (meta?.releaseDate) cf.target.date = cf.target.date || String(meta.releaseDate).slice(0, 10);
       }
       if (!audioUrl) {
         lastTranscribeErrorRef.current = '未能定位音频地址（当前支持 Apple Podcasts 与小宇宙单集链接）';
