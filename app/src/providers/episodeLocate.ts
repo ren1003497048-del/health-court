@@ -38,55 +38,59 @@ interface LookupShape {
   feedUrl: string;
   episodes: any[];
   podcastName: string;
+  via: string;
 }
 
-/** iTunes lookup（浏览器直连）——家宽/正常 IP 下工作 */
-export async function itunesLookupRelay(
-  podcastId: string,
-  episodeId: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<LookupShape | null> {
-  const id = episodeId || podcastId;
-  const apiUrl = `https://itunes.apple.com/lookup?id=${id}&entity=podcastEpisode&country=CN&limit=200`;
-  const res = await fetchImpl(apiUrl);
-  if (!res.ok) return null;
-  const data: any = await res.json();
-  if (!data.resultCount) return null;
-  return extractLookup(data);
-}
-
-/** iTunes lookup 经 Jina 中继——代理 IP 被静默限流时的兜底 */
-export async function itunesLookupViaJina(
+/** iTunes lookup——统一查 podcast 本体+单集列表（查单集 trackId 时 lookup 会静默回空，为 API 已知怪癖） */
+async function itunesLookup(
   podcastId: string,
   episodeId: string,
   jinaKey: string | undefined,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch,
 ): Promise<LookupShape | null> {
-  const id = episodeId || podcastId;
-  const apiUrl = `https://itunes.apple.com/lookup?id=${id}&entity=podcastEpisode&country=CN&limit=200`;
-  const headers: Record<string, string> = { Accept: 'text/plain' };
-  if (jinaKey) headers.Authorization = `Bearer ${jinaKey}`;
-  const res = await fetchImpl(`https://r.jina.ai/${apiUrl}`, { headers });
-  if (!res.ok) return null;
-  const text = await res.text();
-  // Jina 返回 Markdown 包裹：Title/URL Source/Markdown Content: 后跟原始 JSON
-  const start = text.indexOf('{');
-  if (start < 0) return null;
-  let payload = text.slice(start).trim();
-  try {
-    const data = JSON.parse(payload);
+  const apiUrl = `https://itunes.apple.com/lookup?id=${podcastId}&entity=podcastEpisode&country=CN&limit=200`;
+  const parse = (text: string): LookupShape | null => {
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+    let payload = text.slice(start).trim();
+    let data: any;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      return null;
+    }
     if (!data.resultCount) return null;
     return extractLookup(data);
+  };
+  // ① 浏览器直连（家宽/正常 IP 下工作）
+  try {
+    const res = await fetchImpl(apiUrl);
+    if (res.ok) {
+      const r = parse(await res.text());
+      if (r) return { ...r, via: 'iTunes 目录（直连）' };
+    }
   } catch {
-    return null;
+    /* 网络层失败 → Jina 中继 */
   }
+  // ② Jina 中继（代理/数据中心 IP 被 Apple 静默限流时的兜底）
+  try {
+    const headers: Record<string, string> = { Accept: 'text/plain' };
+    if (jinaKey) headers.Authorization = `Bearer ${jinaKey}`;
+    const res = await fetchImpl(`https://r.jina.ai/${apiUrl}`, { headers });
+    if (res.ok) {
+      const r = parse(await res.text());
+      if (r) return { ...r, via: 'iTunes 目录（Jina 中继）' };
+    }
+  } catch {
+    /* 双通道尽 */
+  }
+  return null;
 }
 
-function extractLookup(data: any): LookupShape | null {
+function extractLookup(data: any): LookupShape {
   const eps = (data.results || []).filter((r: any) => r.episodeUrl);
   const feed = (data.results || []).find((r: any) => r.feedUrl);
-  if (!eps.length && !feed) return null;
-  return { feedUrl: feed?.feedUrl || '', episodes: eps, podcastName: feed?.collectionName || '' };
+  return { feedUrl: feed?.feedUrl || '', episodes: eps, podcastName: feed?.collectionName || '', via: '' };
 }
 
 /** 从 RSS 文本解析目标单集（标题相似度 + 日期加权），返回 enclosure URL */
@@ -201,24 +205,10 @@ export async function locateEpisodeAudio(
       episodeTitle: epTitle,
     };
     log('从 Apple 链接提取单集身份…');
-    // ① 直连 lookup
-    let lookup: LookupShape | null = null;
-    try {
-      lookup = await itunesLookupRelay(ids.podcastId, ids.episodeId, fetchImpl);
-    } catch {
-      /* 网络层失败 → 走 Jina */
-    }
-    let via = 'iTunes 目录（直连）';
-    // ② Jina 中继（直连空或网络失败）
-    if (!lookup) {
-      log('iTunes 直连无结果（多为代理 IP 被限流），改经 Jina 中继查询…');
-      try {
-        lookup = await itunesLookupViaJina(ids.podcastId, ids.episodeId, opts.jinaKey, fetchImpl);
-      } catch {
-        /* 继续走 RSS */
-      }
-      via = 'iTunes 目录（Jina 中继）';
-    }
+    // 统一 lookup：查 podcast 本体+单集列表，直连失败/被限流时 Jina 中继
+    const lookup = await itunesLookup(ids.podcastId, ids.episodeId, opts.jinaKey, fetchImpl);
+    const via = lookup?.via || '';
+    if (via.includes('Jina')) log('iTunes 直连无结果（多为代理 IP 被限流），已经 Jina 中继取到目录…');
     if (lookup) {
       ident.podcastName = lookup.podcastName || ident.podcastName;
       ident.feedUrl = lookup.feedUrl || ident.feedUrl;

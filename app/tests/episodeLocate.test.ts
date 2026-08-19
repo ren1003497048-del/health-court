@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAppleIds, matchEpisodeFromRss, itunesLookupViaJina, locateEpisodeAudio } from '../src/providers/episodeLocate';
+import { parseAppleIds, matchEpisodeFromRss, locateEpisodeAudio } from '../src/providers/episodeLocate';
 
 describe('parseAppleIds', () => {
   it('提取 podcast id 与 ?i= 单集 id', () => {
@@ -52,26 +52,55 @@ describe('matchEpisodeFromRss', () => {
   });
 });
 
-describe('itunesLookupViaJina', () => {
-  it('解析 Jina Markdown 包裹的 JSON', async () => {
-    const fake = (async (url: string) => ({
-      ok: true,
-      text: async () =>
-        'Title: \n\nURL Source: https://itunes.apple.com/lookup?...\n\nMarkdown Content:\n\n{"resultCount":2,"results":[{"wrapperType":"track","kind":"podcast","collectionName":"忽左忽右","feedUrl":"https://feed.xyzfm.space/x"},{"wrapperType":"podcastEpisode","episodeUrl":"https://cdn.example/e1.mp3","trackName":"第1期"}]}',
-    })) as any;
-    const r = await itunesLookupViaJina('123', '', undefined, fake);
-    expect(r).not.toBeNull();
-    expect(r!.feedUrl).toBe('https://feed.xyzfm.space/x');
-    expect(r!.episodes.length).toBe(1);
-    expect(r!.podcastName).toBe('忽左忽右');
+describe('locateEpisodeAudio Apple 降级链（统一 lookup）', () => {
+  it('单集链接（?i=）：查本体列表内匹配 trackId（旧"查单集ID"形态已废弃）', async () => {
+    const fake = (async (url: string) => {
+      // 现在统一查 podcast 本体
+      if (url.startsWith('https://itunes.apple.com/lookup?id=1711052890')) {
+        return {
+          ok: true,
+          text: async () =>
+            '{"resultCount":2,"results":[{"kind":"podcast","collectionName":"节目","feedUrl":"https://feed.example/rss"},{"kind":"podcastEpisode","trackId":1000758498673,"episodeUrl":"https://dts.example/e324.mp3","trackName":"324","trackTimeMillis":3000000,"releaseDate":"2026-03-31T19:31:08Z"}]}',
+        };
+      }
+      // 若实现误查单集 ID（旧bug形态）→ 静默空（Apple 实测行为）
+      if (url.startsWith('https://itunes.apple.com/lookup?id=1000758498673')) {
+        return { ok: true, text: async () => '{"resultCount":0,"results":[]}' };
+      }
+      return { ok: true, text: async () => 'unreachable' };
+    }) as any;
+    const r = await locateEpisodeAudio(
+      'https://podcasts.apple.com/cn/podcast/324/id1711052890?i=1000758498673',
+      { fetchImpl: fake },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.audio.audioUrl).toBe('https://dts.example/e324.mp3');
+      expect(r.audio.episodeTitle).toBe('324');
+      expect(r.audio.durationMs).toBe(3000000);
+    }
   });
 
-  it('resultCount=0（代理 IP 被限流形态）→ null', async () => {
-    const fake = (async () => ({
-      ok: true,
-      text: async () => 'Title: \nURL Source: x\nMarkdown Content:\n{"resultCount":0,"results":[]}',
-    })) as any;
-    expect(await itunesLookupViaJina('123', '', undefined, fake)).toBeNull();
+  it('直连被限流 → Jina 中继成功（Markdown 包裹 JSON）', async () => {
+    const fake = (async (url: string) => {
+      if (url.startsWith('https://itunes.apple.com')) {
+        return { ok: true, text: async () => '{"resultCount":0,"results":[]}' }; // 直连静默空
+      }
+      if (url.startsWith('https://r.jina.ai/')) {
+        return {
+          ok: true,
+          text: async () =>
+            'Title: \nURL Source: x\nMarkdown Content:\n{"resultCount":2,"results":[{"kind":"podcast","collectionName":"节目","feedUrl":"https://feed.example/rss"},{"kind":"podcastEpisode","episodeUrl":"https://cdn.example/e1.mp3","trackName":"第1期"}]}',
+        };
+      }
+      return { ok: true, text: async () => '{"resultCount":0,"results":[]}' };
+    }) as any;
+    const r = await locateEpisodeAudio('https://podcasts.apple.com/cn/podcast/id1493503146', { fetchImpl: fake });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.audio.audioUrl).toBe('https://cdn.example/e1.mp3');
+      expect(r.audio.source).toContain('iTunes');
+    }
   });
 });
 
