@@ -18,12 +18,23 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
   const color =
     v.word === '不卫生' ? '#b0271a' : v.word === '可能不卫生' ? '#9a6b12' : v.word === '卫生' ? '#2f6b40' : '#57503f';
 
+  // v2.2.1 代号白话化（与页面一致）
+  const plainFpTypeX = (ty?: string) =>
+    ({ weird_term: '异常用词', rare_case: '冷门案例', data_combo: '数据组合', analogy: '独特类比', joke: '专属玩笑', ordering: '罕见排序', other: '其他特征' } as Record<string, string>)[ty || ''] || ty || '';
+  const plainExamX = (v?: string) =>
+    ({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as Record<string, string>)[v || ''] || '';
+  const plainDesc = (d: string) => d
+    .replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m, ty) => `指纹（${plainFpTypeX(ty)}）`)
+    .replace(/在 SRC(\d+) 命中/g, (_m, n) => `在候选源${n}中命中`)
+    .replace(/← SRC(\d+)/g, (_m, n) => `← 候选源${n}`);
+
   const evidenceRows = (doc.evidence || [])
     .map(
       (e: any) => `
       <div class="ev">
-        <div class="ev-head"><span class="lv ${e.level}">${e.level} ${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.id)} · ${esc(e.kind)}</span></div>
-        <div class="ev-desc">${esc(e.description)}</div>
+        <div class="ev-head"><span class="lv ${e.level}">${e.level} ${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.kind)}</span>${e.examVerdict ? `<span class="ev-id">${e.examVerdict === 'expression_copy' ? '' : '（线索级）'}检定：${esc(plainExamX(e.examVerdict))}</span>` : ''}</div>
+        <div class="ev-desc">${esc(plainDesc(e.description))}</div>
+        ${e.examNote ? `<div class="cc">检定理由：${esc(e.examNote)}</div>` : ''}
         ${e.targetQuote ? `<div class="q"><span class="ql">目标引文</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
         ${e.sourceQuote ? `<div class="q"><span class="ql">源引文</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
         ${(() => {

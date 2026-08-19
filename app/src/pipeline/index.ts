@@ -537,6 +537,84 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     });
     rt.log('对质', `${r.transcription_error ? 'E4' : 'E3'} 指纹命中：${fp.id} ← ${src?.id}${located ? '' : '（源引文未定位，降级展示）'}`);
   }
+  // v2.2.1 定向细比对（用户要求证据清单不少于 3 条）：对 top3 源逐个找"最具体的重合点"，
+  // 命中→产出 E3 候选（走后续检定）；未命中→产出 E1 级负面证据（已查证该源与目标无具体对应），
+  // 让判决书的证据栏总是呈现"查了什么、查到什么、没查到什么"。
+  const PROBE_SYSTEM =
+    'You are a detail comparison officer. Compare a Chinese podcast transcript excerpt against ONE candidate source text. Find the MOST SPECIFIC overlap between them (shared rare case, data combination, idiosyncratic phrasing, ordering, or error). If a specific overlap exists output found=true with BOTH verbatim quotes (target >=20 chars, source >=15 words); if the two merely share topic/theme or public facts, output found=false. Output only JSON: {"found":true|false,"targetQuote":"...","sourceQuote":"...","what":"what specifically overlaps (Chinese, one sentence)","type":"rare_case|data_combo|phrasing|ordering|error|none"}';
+  for (const src of rt.sources.slice(0, 3)) {
+    if (!src.fullText || src.fullText.length < 400) continue;
+    // 已有该源的 E3/E4 证据则跳过（不重复产证）
+    if (evidence.some((e) => e.sourceId === src.id && (e.level === 'E3' || e.level === 'E4'))) continue;
+    rt.log('对质', `细比对官比对 ${src.id}（${src.title.slice(0, 32)}）…`);
+    try {
+      const pr = await chatJson<any>(
+        rt.provider.chat,
+        PROBE_SYSTEM,
+        `目标转录稿（节选）：\n${targetSeg}\n\n候选源 ${src.id} 全文：\n${truncateSmart(src.fullText, 16000)}`,
+        { maxTokens: 700 },
+      );
+      if (pr.found && pr.targetQuote && pr.sourceQuote) {
+        const tLoc = locateQuote(pr.targetQuote, cf.target.text);
+        const sLoc = locateQuote(pr.sourceQuote, src.fullText);
+        evidence.push({
+          id: `EV-PROBE-${src.id}`,
+          level: 'E3',
+          kind: '细节比对',
+          description: `细比对发现与 ${src.title.slice(0, 40)} 的具体重合点：${String(pr.what || '')}`,
+          targetQuote: String(pr.targetQuote),
+          targetQuoteLocated: tLoc,
+          sourceQuote: String(pr.sourceQuote),
+          sourceQuoteLocated: sLoc,
+          sourceId: src.id,
+          detail: { probe: true, overlapType: pr.type, confidence: 0.8 },
+        });
+        rt.log('对质', `细比对命中：${src.id}（${pr.type}）→ 交付检定`);
+      } else {
+        evidence.push({
+          id: `EV-NEG-${src.id}`,
+          level: 'E1',
+          kind: '已查证无对应',
+          description: `已将目标转录稿与 ${src.title.slice(0, 44)}（相似度 ${src.similarity ?? '?'}）逐项比对：未发现具体材料对应——两者仅在主题层面重合，或重合内容均属公共事实。`,
+          sourceId: src.id,
+          detail: { negative: true },
+        });
+        rt.log('对质', `细比对 ${src.id}：无具体对应（负面证据入卷）`);
+      }
+    } catch (e: any) {
+      rt.log('对质', `细比对 ${src.id} 失败（${e.message.slice(0, 60)}）`);
+    }
+  }
+
+  // v2.2.1 证据检定（用户决策：必须区分"独特表达复制"与"事实转述/宏观表达"）：
+  // 每条 E3/E2 证据由 LLM 独立检定四分类；非 expression_copy 的 E3 降级为"线索级"不计入定案统计。
+  const EXAM_SYSTEM =
+    'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell (e.g. source quote too generic or truncated). Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}';
+  const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
+  for (const ev of evidence) {
+    if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
+    try {
+      const ex = await chatJson<any>(
+        rt.provider.chat,
+        EXAM_SYSTEM,
+        `目标引文（中文转录稿）：\n${ev.targetQuote || '（无）'}\n\n源引文：\n${ev.sourceQuote || '（无）'}\n\n源上下文（节选）：\n${truncateSmart(srcOf(ev.sourceId)?.fullText || '', 2000)}`,
+        { maxTokens: 300 },
+      );
+      const v4 = ['expression_copy', 'fact_relay', 'generic_overlap', 'inconclusive'].includes(ex.verdict) ? ex.verdict : 'inconclusive';
+      ev.examVerdict = v4 as any;
+      ev.examNote = String(ex.note || '');
+      if (ev.level === 'E3' && v4 !== 'expression_copy') {
+        ev.detail = { ...(ev.detail || {}), demoted: true, demotedFrom: 'E3' };
+        rt.log('对质', `证据检定：${ev.id} 属「${v4 === 'fact_relay' ? '事实转述' : v4 === 'generic_overlap' ? '宏观表达重合' : '无法判定'}」，降为线索级——${ev.examNote.slice(0, 60)}`);
+      } else {
+        rt.log('对质', `证据检定：${ev.id} 属「${v4 === 'expression_copy' ? '独特表达复制' : v4 === 'fact_relay' ? '事实转述' : v4 === 'generic_overlap' ? '宏观表达重合' : '无法判定'}」——${ev.examNote.slice(0, 60)}`);
+      }
+    } catch (e: any) {
+      ev.examVerdict = 'inconclusive';
+      rt.log('对质', `证据检定失败（${e.message.slice(0, 60)}），按无法判定处理`);
+    }
+  }
+
   // v2.2 证据按置信度排序：E4 > E3 > E2；同级按源相似度降序
   const simOf = (sid?: string) => rt.sources.find((s) => s.id === sid)?.similarity ?? 0;
   evidence.sort((a, b) => {
@@ -558,14 +636,15 @@ export async function verdictStage(
   evidence: EvidenceItem[],
   extra?: { secondOpinion?: { provider: ProviderAdapter } },
 ): Promise<VerdictDoc> {
-  // 汇总统计
-  const fpHits = evidence.filter((e) => e.level === 'E3' || e.level === 'E4');
+  // 汇总统计（v2.2.1：检定非 expression_copy 的 E3 不计入定案计数——它们仍展示，但不构成定案依据）
+  const effective = (e: EvidenceItem) => e.level === 'E3' && e.detail?.demoted ? false : true;
+  const fpHits = evidence.filter((e) => (e.level === 'E3' || e.level === 'E4') && effective(e));
   const distinctFps = new Set(fpHits.map((e) => e.id.split('-')[1])).size;
   const stats = {
     e4: evidence.filter((e) => e.level === 'E4').length,
-    e3: evidence.filter((e) => e.level === 'E3').length,
+    e3: evidence.filter((e) => e.level === 'E3' && effective(e)).length,
     e3DistinctFingerprints: distinctFps,
-    e2: evidence.some((e) => e.level === 'E2'),
+    e2: evidence.some((e) => e.level === 'E2' && effective(e)),
     e1: !!cf.profile && (cf.profile.entities.length > 0 || cf.profile.outline.length > 0),
     e5: evidence.filter((e) => e.level === 'E5').length,
   };

@@ -22,6 +22,12 @@ export interface RunningState {
   objectionPlaying: boolean;
 }
 
+/** v2.2.1 代号白话化：把后端标识（FP6/rare_case/SRC1）翻译成用户可读语言 */
+const plainFpType = (ty?: string) =>
+  ({ weird_term: '异常用词', rare_case: '冷门案例', data_combo: '数据组合', analogy: '独特类比', joke: '专属玩笑', ordering: '罕见排序', other: '其他特征' } as Record<string, string>)[ty || ''] || ty || '';
+const plainExam = (v?: string) =>
+  ({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as Record<string, string>)[v || ''] || '';
+
 export function App(): React.ReactElement {
   const [tab, setTabState] = useState<Tab>(() => {
     const h = (typeof location !== 'undefined' ? location.hash.replace('#', '') : '') as Tab;
@@ -595,9 +601,16 @@ function VerdictView(props: {
           <div className="evidence-card" key={e.id}>
             <div className="evidence-head">
               <span className={'evidence-level ' + e.level}>{e.level} {plainLevelName(e.level)}</span>
-              <span className="evidence-id">{e.id} · {e.kind}</span>
+              <span className="evidence-id">{e.kind}</span>
+              {e.examVerdict && (
+                <span className={e.examVerdict === 'expression_copy' ? 'evidence-id' : 'hint'} style={{ marginLeft: 8 }}>
+                  检定：{plainExam(e.examVerdict)}
+                </span>
+              )}
+              {(e.detail as any)?.demoted && <span className="hint" style={{ marginLeft: 8 }}>（已降为线索级，不计入定案）</span>}
             </div>
-            <div style={{ fontSize: 13.5 }}>{e.description}</div>
+            <div style={{ fontSize: 13.5 }}>{e.description.replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m: string, ty: string) => `指纹（${plainFpType(ty)}）`).replace(/在 SRC(\d+) 命中/g, (_m: string, n: string) => `在候选源${n}中命中`).replace(/← SRC(\d+)/g, (_m: string, n: string) => `← 候选源${n}`)}</div>
+            {e.examNote && <div className="hint" style={{ marginTop: 4 }}>检定理由：{e.examNote}</div>}
             {(e.targetQuote || e.sourceQuote) && (
               <div className="quote-pair">
                 {e.targetQuote && (
