@@ -27,7 +27,7 @@ export function cjkPunctNormalize(text: string): string {
       continue;
     }
     if (ch === "'") {
-      out += (text.slice(0, i).split("'").length % 2 === 1) ? '『' : '」';
+      out += (text.slice(0, i).split("'").length % 2 === 1) ? '『' : '』';
       continue;
     }
     const map: Record<string, string> = { ',': '，', ':': '：', ';': '；', '?': '？', '!': '！', '(': '（', ')': '）' };
