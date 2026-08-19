@@ -450,6 +450,13 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       rt.log('检索', `候选源全文获取失败：${c.doc.url.slice(0, 60)}，以摘要对质`);
     }
     const parkHit = SOURCE_QUALITY_GATE.parkDomainWords.some((w) => (fullText + title).toLowerCase().includes(w.toLowerCase()));
+    // v2.2.6 搜索错误页/空结果页（K5B292 教训：'Try searching for it instead' 4088字符过闸占了相似度90席位）
+    const junkTitle = /try searching|no results|page not found|not found|404|search results for|nothing matched/i.test(title);
+    if (junkTitle) {
+      rejected.push({ title, reason: '搜索错误/空结果页' });
+      rt.log('检索', `候选源被质量闸门拦截（搜索错误页）：${title.slice(0, 40)}`);
+      continue;
+    }
     if (fullText.length > 0 && fullText.length < SOURCE_QUALITY_GATE.minTextChars) {
       rejected.push({ title, reason: `正文仅 ${fullText.length} 字符` });
       rt.log('检索', `候选源被质量闸门拦截（正文仅 ${fullText.length} 字符）：${title.slice(0, 40)}`);
@@ -543,6 +550,46 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
       );
       src.aiSummary = `[${su.lang || '?'}·${su.type || '?'}] ${su.topic || ''}｜重合：${su.overlap || '无'}`;
     } catch { /* 摘要失败不阻塞对质 */ }
+  }
+
+  // 4.1c v2.2.6 宏观结构对比（用户决策：不能只抽点做事实对比，必须先看宏观/结构层）：
+  // 目标画像 outline 逐项在源全文中找对应段——输出映射覆盖率。≥60% 环节有实质对应 → E2 候选。
+  // 这是母项目维度B（主干-细节）的操作化：论证骨架对应，不依赖零散指纹。
+  const MACRO_SYSTEM =
+    'You map the argument structure of a Chinese podcast episode outline against ONE candidate source. For EACH outline item (usually 4-8), determine whether the source contains a SUBSTANTIAL corresponding section (not a passing mention): output {"item": 1, "found": true, "sourceExcerpt": "verbatim quote from source (>=15 words)", "note": "one-line Chinese note"} or found=false. Then output overall coverage = found items / total. Found means the source dedicates real discussion to that part of the argument, not just mentions the topic word. Output only JSON: {"mappings":[{"item":1,"found":true,"sourceExcerpt":"...","note":"..."}],"coverage":0.0,"verdictNote":"Chinese one-liner"}';
+  const outlineItems = (cf.profile?.outline || []).slice(0, 8);
+  if (outlineItems.length >= 3) {
+    for (const src of rt.sources.slice(0, 4)) {
+      if (!src.fullText || src.fullText.length < 800) continue;
+      if (evidence.some((e) => e.sourceId === src.id && e.level === 'E2')) continue;
+      rt.log('对质', `宏观结构官比对 ${src.id}（${src.title.slice(0, 30)}）：目标大纲 ${outlineItems.length} 项映射…`);
+      try {
+        const mc = await chatJson<any>(
+          rt.provider.chat,
+          MACRO_SYSTEM,
+          `目标大纲（中文播客单集）：\n${outlineItems.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\n候选源 ${src.id} 全文：\n${truncateSmart(src.fullText, 16000)}`,
+          { maxTokens: 1500 },
+        );
+        const cov = Math.max(0, Math.min(1, +mc.coverage || 0));
+        const foundItems = ((mc.mappings || []) as any[]).filter((m) => m.found && m.sourceExcerpt);
+        if (cov >= 0.6 && foundItems.length >= 3) {
+          evidence.push({
+            id: `EV-MACRO-${src.id}`,
+            level: 'E2',
+            kind: '宏观结构对应',
+            description: `目标大纲 ${outlineItems.length} 项中 ${foundItems.length} 项（${Math.round(cov * 100)}%）在该源有实质对应段落——论证主干同构：${String(mc.verdictNote || '')}`,
+            sourceId: src.id,
+            targetQuoteLocated: true,
+            detail: { macro: true, coverage: cov, mappings: foundItems.slice(0, 8) },
+          });
+          rt.log('对质', `宏观结构：${src.id} 覆盖率 ${Math.round(cov * 100)}%（${foundItems.length}/${outlineItems.length} 项对应）→ E2`);
+        } else {
+          rt.log('对质', `宏观结构：${src.id} 覆盖率 ${Math.round(cov * 100)}%（<60%），不构成主干同构`);
+        }
+      } catch (e: any) {
+        rt.log('对质', `宏观结构比对 ${src.id} 失败（${e.message.slice(0, 60)}）`);
+      }
+    }
   }
 
   // 4.2 指纹验证（对全部源）
@@ -645,6 +692,22 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
+    // v2.2.6：结构类 E2（宏观结构/论证链同构）走定位校验而非引文检定——其可靠性来自
+    // 覆盖率阈值（60%）+源摘录逐条定位；引文式检定不适用于结构证据
+    if (ev.level === 'E2' && (ev.detail as any)?.macro) {
+      const maps = ((ev.detail as any).mappings || []) as any[];
+      const src = srcOf(ev.sourceId);
+      const locatedN = maps.filter((m) => src && locateQuote(String(m.sourceExcerpt || ''), src.fullText || '')).length;
+      if (maps.length && locatedN / maps.length >= 0.5) {
+        ev.examVerdict = 'expression_copy';
+        ev.examNote = `结构映射 ${maps.length} 项中 ${locatedN} 项源摘录定位通过——主干对应经机械校验`;
+      } else {
+        ev.detail = { ...(ev.detail as any), demoted: true, demotedFrom: 'E2' };
+        ev.examVerdict = 'inconclusive';
+        ev.examNote = '结构映射的源摘录定位不足半数，降为线索级';
+      }
+      continue;
+    }
     try {
       const ex = await chatJson<any>(
         rt.provider.chat,

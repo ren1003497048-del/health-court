@@ -125,3 +125,32 @@ describe('v2.2.4 R1b 英文守卫', () => {
     expect(ok('"three iterations" Ku Klux Klan 1866 1915 podcast')).toBe(true);
   });
 });
+
+
+describe('v2.2.6 壳页检测器（K5B292 案：Apple 壳页 24KB 误判足量全文）', () => {
+  const isShell = (ft: string) => {
+    if (ft.length < 3000) return false;
+    const nav = (ft.match(/\]\(https?:\/\//g) || []).length;
+    const words = ft.split(/\s+/).length;
+    return nav / Math.max(1, words / 100) > 8;
+  };
+  it('Apple 壳页（24878字符/403链接/1445词 → 密度27.9）判壳页', () => {
+    // K5B292 案 SRC1 真实形态
+    const fake = ('[](https://podcasts.apple.com/x) '.repeat(403)) + 'word '.repeat(500);
+    expect(isShell(fake)).toBe(true);
+  });
+  it('真实转录稿（链接极少）判正文', () => {
+    const fake = 'word '.repeat(8000) + '[](https://example.com) '.repeat(30);
+    expect(isShell(fake)).toBe(false);
+  });
+});
+
+describe('v2.2.6 搜索垃圾页闸门（K5B292 案：Try searching for it 占了相似度90席位）', () => {
+  const junk = (title: string) => /try searching|no results|page not found|not found|404|search results for|nothing matched/i.test(title);
+  it("'Try searching for it instead' 被拦", () => {
+    expect(junk('Try searching for it instead')).toBe(true);
+  });
+  it('正常标题不误伤', () => {
+    expect(junk('The Ku Klux Klan: The Rise of Evil (Part 1)')).toBe(false);
+  });
+});

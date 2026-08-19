@@ -138,7 +138,18 @@ export function App(): React.ReactElement {
       .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
       .slice(0, maxCount);
     for (const src of pool) {
-      if (src.fullText && src.fullText.length > 5000) continue; // 已有足量全文（可能是完整转录稿页）
+      if (src.transcribed) continue; // 已转录过
+      // v2.2.6 修正：fullText 长度不能代表内容深度——Apple/Spotify 壳页 20KB+ 全是导航+shownotes。
+      // 壳页特征：导航链接密度极高（](https:// 短链接串）且无对话转录特征（无时间戳/无长句段）
+      const isShellPage = (() => {
+        const ft = src.fullText || '';
+        if (ft.length < 3000) return false; // 短页面按原逻辑（浅文本，值得转录）
+        const navLinks = (ft.match(/\]\(https?:\/\//g) || []).length;
+        const words = ft.split(/\s+/).length;
+        // 每 100 词超 8 个 markdown 链接 → 壳页（导航/目录页），shownotes 深度不足，仍需转录
+        return navLinks / Math.max(1, words / 100) > 8;
+      })();
+      if (src.fullText && src.fullText.length > 5000 && !isShellPage) continue; // 真有足量正文（如 musixmatch 转录稿页）
       try {
         logSinkRef.current('检索', `候选源 ${src.id} 为播客单集（相似度 ${src.similarity ?? '?'}），启动转录取全文…`);
         const located = await locateEpisodeAudio(src.url, { jinaKey: s.jinaApiKey || undefined });
