@@ -13,6 +13,7 @@ import { locateQuote, truncateSmart, parseJinaMarkdown, normalize } from '../cou
 import { preReview, extractDate } from '../court/preReview';
 import { stripPageChrome, chromeRatio } from '../court/chromeStrip';
 import { applyFingerprintDiscipline, isMirrorOrGenericSource } from '../court/fingerprintDiscipline';
+import { cjkPunctNormalize } from '../court/textUtils';
 import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
@@ -34,6 +35,8 @@ export interface CourtRuntime {
   sources: SourceDoc[];
   /** 镜像源注记（归属链佐证，不参与对质） */
   mirrorNotes?: string[];
+  /** v2.2 检索淘汰记录（透明可复核：标题+原因） */
+  rejectedSources?: { title: string; reason: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -251,22 +254,26 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
   return cf;
 }
 
-/** 标题→R0 检索式：剔除期号/节目名后缀，保留主题专名，加英文对应词与 podcast 意图词 */
-export function buildTitleQuery(cf: CaseFile): string {
+/** 标题→R0 检索式（v2.2）：LLM 把中文标题翻成英文检索式——避免中文检索式只找回中文圈镜像/同节目内容 */
+export async function buildTitleQueryEn(cf: CaseFile, rt: CourtRuntime): Promise<string> {
   let t = (cf.target.title || '').replace(/\s*-\s*[^-]+-\s*(Apple\s*)?播客\s*$/, '').trim();
   t = t.replace(/^\d{1,4}\s*[-—－]\s*/, ''); // 期号
   if (!t || t.length < 3) return '';
-  // 让 LLM 预生成英文检索式成本高，这里用确定性启发：保留标题原文 + 通用意图词
-  // （中文标题对英文源检索需翻译——交由 R0b：如画像实体含英文专名则优先用之）
+  try {
+    const r = await chatJson<any>(
+      rt.provider.chat,
+      'You translate a Chinese podcast episode title into ONE precise English web-search query that would find ORIGINAL English-language sources (books, podcasts, essays) discussing the same subject. Output only JSON: {"query":"english query"}. Keep proper nouns. Add none or one of: podcast / book / essay - only if it helps find original sources, not Chinese reposts.',
+      `标题：${t}\n主题域：${cf.profile?.topicDomain || ''}\n画像实体：${(cf.profile?.entities || []).slice(0, 10).join('；')}`,
+    );
+    const q = String(r.query || '').trim();
+    if (q.length >= 8 && /[A-Za-z]{4,}/.test(q)) return q;
+  } catch { /* LLM 失败 → 回退启发式 */ }
+  // 确定性回退：画像英文实体 + 意图词
   const entities = (cf.profile?.entities || [])
     .filter((e) => /[A-Za-z]{3,}/.test(e))
-    .filter((e) => !/kkk|ku klux/i.test(e)) // 避免与引号短语重复
+    .filter((e) => !/kkk|ku klux/i.test(e))
     .slice(0, 2);
-  const intent = 'podcast episode';
-  if (/三[kK]|3k|kkk/i.test(t)) {
-    return `"Ku Klux Klan" ${entities.join(' ')} ${intent}`.trim();
-  }
-  return `${t} ${intent}`;
+  return [t, ...entities, 'podcast episode analysis'].filter(Boolean).join(' ').slice(0, 120);
 }
 
 /** 从目标标题推断节目名（"338-xxx - 独树不成林 - Apple 播客" 的倒数第二段） */
@@ -281,7 +288,8 @@ function inferProgramName(cf: CaseFile): string | undefined {
 // ---------------------------------------------------------------------------
 
 export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSources?: number }): Promise<CaseFile> {
-  const maxSources = opts?.maxSources ?? 5;
+  // v2.2：三轮足量检索（R0标题英文化 + R1主题 + R2指纹精确 + R3线报），目标 ≥8 候选源
+  const maxSources = opts?.maxSources ?? 10;
   const q = await chatJson<any>(
     rt.provider.chat,
     DISCOVERY_QUERY_SYSTEM,
@@ -290,7 +298,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       coreClaims: cf.profile?.coreClaims,
       entities: cf.profile?.entities,
       outline: cf.profile?.outline,
-    }, null, 0)}\n\n指纹候选（id/类型/检索词）：${cf.fingerprints.map((f) => `${f.id} ${f.type} [${f.searchKeywordsEn.join('; ')}]`).join('\n')}\n\n群众线报：${cf.leads.map((l) => `${l.id} ${l.searchKeywordsEn.join('; ')}`).join('\n') || '无'}`,
+    }, null, 0)}\n\n指纹候选（id/类型/英文检索词）：${cf.fingerprints.map((f) => `${f.id} ${f.type} [${f.searchKeywordsEn.join('; ')}]`).join('\n')}\n\n群众线报：${cf.leads.map((l) => `${l.id} ${l.searchKeywordsEn.join('; ')}`).join('\n') || '无'}`,
   );
 
   const queries: { tag: string; q: string }[] = [];
@@ -298,20 +306,21 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   (q.queries?.fingerprint || []).slice(0, 10).forEach((f: any) => {
     if (f && f.query) queries.push({ tag: `R2 指纹 ${f.fingerprintId || ''}`.trim(), q: String(f.query) });
   });
-  (q.queries?.leads || []).slice(0, 5).forEach((l: any) => {
+  (q.queries?.leads || []).slice(0, 3).forEach((l: any) => {
     if (l && l.query) queries.push({ tag: 'R3 线报', q: String(l.query) });
   });
-  // R0 标题直检（T76WDM 案根因3）：标题含最特异信号（专名/主题词），在任何画像查询之前
-  const titleQuery = buildTitleQuery(cf);
+  // R0 标题直检（v2.2）：LLM 生成英文检索式，找境外原文/原播客而非中文圈镜像
+  const titleQuery = await buildTitleQueryEn(cf, rt);
   if (titleQuery) {
     queries.unshift({ tag: 'R0 标题', q: titleQuery });
-    rt.log('检索', `R0 标题检索式：${titleQuery}`);
+    rt.log('检索', `R0 标题检索式（英文）：${titleQuery}`);
   }
-  rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索…`);
+  rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索（目标候选 ≥8）…`);
 
   const seen = new Set<string>();
   const candidates: { doc: { title: string; url: string; snippet: string; date?: string }; via: string }[] = [];
   const mirrorNotes: string[] = [];
+  const rejected: { title: string; reason: string }[] = [];
   for (const { tag, q: query } of queries) {
     try {
       const { docs } = await rt.provider.search(query);
@@ -326,13 +335,66 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       rt.log('检索', `[${tag}] 失败：${e.message.slice(0, 80)}`);
     }
   }
+  rt.log('检索', `共获不重复候选 ${candidates.length} 个，进入过滤与评分…`);
 
-  // 时间方向过滤：候选晚于目标 → 标记 reversed（保留但降权）
+  // —— 源卫生 + 质量闸门（确定性过滤，全部记录淘汰原因）——
   const targetDate = cf.target.date ? Date.parse(cf.target.date) : NaN;
+  const filtered: { doc: { title: string; url: string; snippet: string; date?: string }; via: string }[] = [];
+  for (const c of candidates) {
+    const hyg = isMirrorOrGenericSource(
+      { title: c.doc.title, url: c.doc.url, snippet: c.doc.snippet },
+      { title: cf.target.title, url: cf.input.url, author: cf.target.author },
+    );
+    if (hyg.generic) {
+      rejected.push({ title: c.doc.title, reason: '通用平台壳页' });
+      continue;
+    }
+    if (hyg.mirror) {
+      mirrorNotes.push(`${c.doc.title.slice(0, 50)}（${hyg.note}）`);
+      rejected.push({ title: c.doc.title, reason: `自我镜像：${hyg.note}` });
+      continue;
+    }
+    // v2.2 补充：源标题与目标标题高度相似（同节目其他单集/同内容转发）→ 疑似镜像
+    const tgtTitle = (cf.target.title || '').replace(/^\d{1,4}\s*[-—－]\s*/, '');
+    const srcTitle = (c.doc.title || '').replace(/^\d{1,4}\s*[-—－]\s*/, '');
+    const tKey = tgtTitle.slice(0, 18);
+    if (tKey.length >= 8 && srcTitle.includes(tKey)) {
+      mirrorNotes.push(`${c.doc.title.slice(0, 50)}（标题与目标同源）`);
+      rejected.push({ title: c.doc.title, reason: '标题与目标高度相似（同节目单集/转发）' });
+      continue;
+    }
+    filtered.push(c);
+  }
+  rt.log('检索', `卫生过滤：${candidates.length} → ${filtered.length}（镜像/壳页 ${rejected.length} 个转归属链）`);
+
+  // —— v2.2 LLM 相似度排序（批量评分）：目标画像 vs 候选标题+摘要 ——
+  const pool = filtered.slice(0, 24);
+  const scored: typeof filtered & { sim?: number; why?: string }[] = filtered.slice(0, 0);
+  let rankList: { idx: number; sim: number; why: string }[] = [];
+  if (pool.length) {
+    rt.log('检索', '书记员对候选源做主题相似度评分与排序…');
+    try {
+      const rk = await chatJson<any>(
+        rt.provider.chat,
+        'You rank candidate sources by semantic similarity to a target podcast episode profile. Similarity 0-100: 90+ = same specific subject AND likely same specific claims/examples; 70-89 = same specific subject; 40-69 = same broad domain; <40 = unrelated. Output only JSON: {"ranked":[{"idx":0,"sim":85,"why":"short reason"}]}. idx is the 0-based index in the candidate list. Rank ALL candidates.',
+        `目标画像：主题域=${cf.profile?.topicDomain || ''}\n核心论点：${(cf.profile?.coreClaims || []).slice(0, 5).join('；')}\n实体：${(cf.profile?.entities || []).slice(0, 12).join('；')}\n摘要：${cf.profile?.summaryZh || ''}\n\n候选源列表：\n${pool.map((c, i) => `${i}. ${c.doc.title} | ${String(c.doc.snippet || '').slice(0, 160).replace(/\n/g, ' ')}`).join('\n')}`,
+        { maxTokens: 3000 },
+      );
+      rankList = ((rk.ranked || []) as any[]).map((r) => ({ idx: +r.idx, sim: Math.max(0, Math.min(100, +r.sim || 0)), why: String(r.why || '') })).filter((r) => r.idx >= 0 && r.idx < pool.length);
+      rt.log('检索', `评分完成：${rankList.length}/${pool.length} 个候选获分`);
+    } catch (e: any) {
+      rt.log('检索', `相似度评分失败（${e.message.slice(0, 60)}），按检索顺序入卷`);
+    }
+  }
+  // 按相似度降序（无分者排后，保持原序）
+  const simMap = new Map(rankList.map((r) => [r.idx, r]));
+  const ordered = pool.map((c, i) => ({ c, r: simMap.get(i) })).sort((a, b) => (b.r?.sim ?? -1) - (a.r?.sim ?? -1));
+
+  // —— 取全文（前 maxSources+4），记录 partial ——
   rt.sources = [];
   const fetched: SourceDoc[] = [];
   rt.mirrorNotes = mirrorNotes;
-  for (const c of candidates.slice(0, maxSources + 4)) {
+  for (const { c, r } of ordered.slice(0, maxSources + 4)) {
     if (fetched.length >= maxSources) break;
     let fullText = '';
     let partial = true;
@@ -345,30 +407,14 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     } catch {
       rt.log('检索', `候选源全文获取失败：${c.doc.url.slice(0, 60)}，以摘要对质`);
     }
-    // 源卫生（机制PRD v2 §3.2）：自我镜像与平台壳页排除
-    {
-      const hyg = isMirrorOrGenericSource(
-        { title, url: c.doc.url, snippet: c.doc.snippet },
-        { title: cf.target.title, url: cf.input.url, author: cf.target.author },
-      );
-      if (hyg.generic) {
-        rt.log('检索', `候选源被源卫生排除（${hyg.note}）：${title.slice(0, 40)}`);
-        continue;
-      }
-      if (hyg.mirror) {
-        mirrorNotes.push(`${title.slice(0, 50)}（${hyg.note}）→ 转归属链佐证，不参与对质`);
-        rt.log('检索', `候选源为自我镜像（${hyg.note}），转归属链佐证：${title.slice(0, 40)}`);
-        continue;
-      }
-    }
-    // 源质量闸门（P0-4）：全文太短或疑似待售域名 → 丢弃并记录
     const parkHit = SOURCE_QUALITY_GATE.parkDomainWords.some((w) => (fullText + title).toLowerCase().includes(w.toLowerCase()));
     if (fullText.length > 0 && fullText.length < SOURCE_QUALITY_GATE.minTextChars) {
-      rt.log('检索', `候选源被质量闸门拦截（正文仅 ${fullText.length} 字符 < ${SOURCE_QUALITY_GATE.minTextChars}）：${title.slice(0, 40)}`);
+      rejected.push({ title, reason: `正文仅 ${fullText.length} 字符` });
+      rt.log('检索', `候选源被质量闸门拦截（正文仅 ${fullText.length} 字符）：${title.slice(0, 40)}`);
       continue;
     }
     if (parkHit) {
-      rt.log('检索', `候选源被质量闸门拦截（域名待售页）：${title.slice(0, 40)}`);
+      rejected.push({ title, reason: '域名待售页' });
       continue;
     }
     const srcDate = c.doc.date ? Date.parse(c.doc.date) : NaN;
@@ -384,10 +430,16 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       reversed: !Number.isNaN(targetDate) && !Number.isNaN(srcDate) && srcDate > targetDate,
       origin: 'search',
       viaQuery: c.via,
+      similarity: r?.sim,
+      aiSummary: r?.why,
     });
-    rt.log('检索', `候选源入卷 ${fetched.length}/${maxSources}：${title.slice(0, 40)}${partial ? '（部分取证）' : ''}`);
+    rt.log('检索', `候选源入卷 ${fetched.length}/${maxSources}（相似度 ${r?.sim ?? '?'}）：${title.slice(0, 44)}${partial ? '（部分取证）' : ''}`);
+  }
+  if (fetched.length < 8) {
+    rt.log('检索', `⚠ 候选源不足 8 个（${fetched.length}），检索广度受限——已在 ${queries.length} 条检索式内尽力`);
   }
   rt.sources = fetched;
+  rt.rejectedSources = rejected;
   return cf;
 }
 
@@ -402,9 +454,9 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     return evidence;
   }
 
-  // 4.1 结构对齐（对 top 2 源做）
+  // 4.1 结构对齐（v2.2：对 top 4 源做——相似度排序后的前四）
   const targetSeg = truncateSmart(cf.target.text, 12000);
-  for (const src of rt.sources.slice(0, 2)) {
+  for (const src of rt.sources.slice(0, 4)) {
     if (!src.fullText || src.fullText.length < 500) continue;
     rt.log('对质', `结构鉴定官比对 ${src.id}（${src.title.slice(0, 36)}）…`);
     try {
@@ -432,6 +484,20 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     } catch (e: any) {
       rt.log('对质', `结构对齐失败（${e.message.slice(0, 80)}）`);
     }
+  }
+
+  // 4.1b v2.2 候选源 AI 摘要（对全部入卷源）：语言、内容类型、主题、与目标的重合点
+  for (const src of rt.sources) {
+    if (src.aiSummary && src.aiSummary.length > 30) continue; // 排序阶段已有 why 的不重做
+    try {
+      const su = await chatJson<any>(
+        rt.provider.chat,
+        "Summarize a candidate source for a plagiarism-check court. Output only JSON: {\"lang\":\"en|zh|other\",\"type\":\"podcast|article|book|wiki|other\",\"topic\":\"one line\",\"overlap\":\"what specifically overlaps with the target episode subject/claims/examples\"}",
+        `目标画像：主题域=${cf.profile?.topicDomain || ''}；摘要=${cf.profile?.summaryZh || ''}\n\n候选源：${src.title}\n${truncateSmart(src.fullText || src.snippet || '', 3000)}`,
+        { maxTokens: 400 },
+      );
+      src.aiSummary = `[${su.lang || '?'}·${su.type || '?'}] ${su.topic || ''}｜重合：${su.overlap || '无'}`;
+    } catch { /* 摘要失败不阻塞对质 */ }
   }
 
   // 4.2 指纹验证（对全部源）
@@ -471,6 +537,13 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     });
     rt.log('对质', `${r.transcription_error ? 'E4' : 'E3'} 指纹命中：${fp.id} ← ${src?.id}${located ? '' : '（源引文未定位，降级展示）'}`);
   }
+  // v2.2 证据按置信度排序：E4 > E3 > E2；同级按源相似度降序
+  const simOf = (sid?: string) => rt.sources.find((s) => s.id === sid)?.similarity ?? 0;
+  evidence.sort((a, b) => {
+    const lv = { E4: 3, E3: 2, E2: 1, E1: 0, E5: 0 } as Record<string, number>;
+    const d = (lv[b.level] ?? 0) - (lv[a.level] ?? 0);
+    return d !== 0 ? d : simOf(b.sourceId) - simOf(a.sourceId);
+  });
   rt.evidence = evidence;
   return evidence;
 }
@@ -509,7 +582,7 @@ export async function verdictStage(
       `裁决词：${v.word}\n触发规则：${v.rule}\n案卷标题：${cf.target.title}\n案情摘要：${cf.profile?.summaryZh || ''}\n证据清单：\n${evidence.map((e) => `${e.id} [${e.level}] ${e.description}\n  目标引文：${e.targetQuote || '无'}\n  源引文：${e.sourceQuote || '无'}${e.sourceQuoteLocated === false ? '（源引文未在源文本中定位）' : ''}`).join('\n')}\n候选源：${rt.sources.map((s) => `${s.id} ${s.title} ${s.partial ? '(部分取证)' : ''}`).join('；')}\n指纹候选总数：${cf.fingerprints.length}，命中：${distinctFps}`,
       { maxTokens: 1200 },
     );
-    opinion = String(op.opinion || '');
+    opinion = cjkPunctNormalize(String(op.opinion || ''));
   } catch (e: any) {
     opinion = `（法官意见生成失败：${e.message.slice(0, 60)}）`;
   }
@@ -576,18 +649,27 @@ export function buildVerdictDoc(
   const unlocated = evidence.filter((e) => e.sourceQuote && e.sourceQuoteLocated === false);
   if (unlocated.length) limits.push(`${unlocated.length} 条证据的源引文未能在源文本中定位（防幻觉校验未通过），已降级展示`);
   if (!cf.target.comments) limits.push('未获取到评论区数据，群众线报通道未启用');
-  limits.push(`指纹候选 ${cf.fingerprints.length} 个，检索候选源 ${rt.sources.length} 个；「未发现」不等于「证明清白」`);
+  limits.push(`指纹候选 ${cf.fingerprints.length} 个，检索候选源 ${rt.sources.length} 个（相似度排序，满分 100）；「未发现」不等于「证明清白」`);
+  if (rt.rejectedSources?.length) {
+    limits.push(`检索淘汰 ${rt.rejectedSources.length} 个候选：${rt.rejectedSources.slice(0, 6).map((r) => `${r.title.slice(0, 24)}（${r.reason}）`).join('；')}${rt.rejectedSources.length > 6 ? ' 等' : ''}`);
+  }
+  const topSim = rt.sources.filter((s) => typeof s.similarity === 'number').slice(0, 3).map((s) => `${s.id}=${s.similarity}`);
+  if (topSim.length) limits.push(`相似度前三：${topSim.join('，')}`);
+
+  // v2.2 出口标点纪律：中文区半角标点归一化为全角（确定性兜底，防 LLM 漏守约束）
+  const evidenceN = evidence.map((e) => ({ ...e, description: cjkPunctNormalize(e.description) }));
+  const limitsN = limits.map(cjkPunctNormalize);
 
   return {
     caseFile: cf,
     sources: rt.sources,
-    evidence,
+    evidence: evidenceN,
     verdict: v,
-    opinion,
+    opinion: cjkPunctNormalize(opinion),
     crossChecks,
     disclaimer: DISCLAIMER,
     namingFootnote: NAMING_FOOTNOTE,
     generatedAt: new Date().toISOString(),
-    limits,
+    limits: limitsN,
   };
 }

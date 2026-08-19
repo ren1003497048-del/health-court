@@ -4,6 +4,38 @@
 
 const PUNCT = /[，。、；：？！“”‘’「」『』（）()《》〈〉…—\-·,.;:?!"'`\s\u00a0]/g;
 
+/**
+ * v2.2 中文标点归一化（确定性兜底，配合提示词约束）：
+ * 中文语境中的半角双引号 → 「」，半角逗号/冒号/分号/问号/叹号 → 全角。
+ * 判定“中文语境”：该标点的前后任一字符为 CJK。英文引文整段不动的场景由前后字符决定，天然跳过。
+ */
+export function cjkPunctNormalize(text: string): string {
+  const isCJK = (ch: string | undefined) => !!ch && /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch);
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const prev = text[i - 1];
+    const next = text[i + 1];
+    const ctx = isCJK(prev) || isCJK(next);
+    if (!ctx) {
+      out += ch;
+      continue;
+    }
+    // 成对半角双引号 → 「」（按出现次序奇偶配对）
+    if (ch === '"') {
+      out += (text.slice(0, i).split('"').length % 2 === 1) ? '「' : '」';
+      continue;
+    }
+    if (ch === "'") {
+      out += (text.slice(0, i).split("'").length % 2 === 1) ? '『' : '」';
+      continue;
+    }
+    const map: Record<string, string> = { ',': '，', ':': '：', ';': '；', '?': '？', '!': '！', '(': '（', ')': '）' };
+    out += map[ch] || ch;
+  }
+  return out;
+}
+
 /** 归一化：去标点空白、拉丁转小写、全角字母转半角 */
 export function normalize(text: string): string {
   return text

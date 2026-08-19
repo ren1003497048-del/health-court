@@ -1,3 +1,4 @@
+import { cjkPunctNormalize } from '../src/court/textUtils';
 import { describe, it, expect } from 'vitest';
 import { mapVerdict, EVIDENCE_LEVEL_INFO, DISCLAIMER } from '../src/court/evidence';
 import { locateQuote, locateExact, normalize, similarity, segment, truncateSmart, parseJinaMarkdown } from '../src/court/textUtils';
@@ -111,6 +112,20 @@ describe('源质量闸门（P0-4）', () => {
     const { SOURCE_QUALITY_GATE } = await import('../src/court/evidence');
     expect(SOURCE_QUALITY_GATE.minTextChars).toBeGreaterThanOrEqual(800);
     expect(SOURCE_QUALITY_GATE.parkDomainWords.length).toBeGreaterThan(0);
+  });
+});
+
+describe('中文标点归一化（v2.2）', () => {
+  it('中文语境半角双引号→「」配对，逗号冒号→全角', () => {
+    expect(cjkPunctNormalize('他说"这是抄袭",然后离开: 没问题')).toBe('他说「这是抄袭」，然后离开： 没问题');
+  });
+  it('英文语境（前后无 CJK）保持半角原样', () => {
+    expect(cjkPunctNormalize('He said "copy", and left: fine')).toBe('He said "copy", and left: fine');
+  });
+  it('混合：紧邻中文的半角引号转「」（配对），中文侧逗号归一化', () => {
+    const out = cjkPunctNormalize('他说"health corps"这个短语,被误听');
+    // 紧邻 CJK 的成对引号→「」；紧邻 CJK 的逗号→全角
+    expect(out).toBe('他说「health corps」这个短语，被误听');
   });
 });
 

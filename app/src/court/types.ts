@@ -69,4 +69,10 @@ export interface SourceDoc {
   reversed: boolean;
   origin: 'search' | 'user' | 'seed';
   viaQuery?: string;
+  /** v2.2 相似度排序：0-100，与目标画像的语义相似度（LLM 评估），降序排列依据 */
+  similarity?: number;
+  /** v2.2 候选源 AI 摘要（含语言、类型、主题、与目标重合点） */
+  aiSummary?: string;
+  /** v2.2 淘汰原因（不入卷时记录，透明可复核） */
+  rejectedReason?: string;
 }

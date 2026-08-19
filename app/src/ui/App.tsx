@@ -117,6 +117,46 @@ export function App(): React.ReactElement {
     }
   };
 
+  /** v2.2 候选源转录：高相似候选本身是播客单集时，取转录稿替代浅层 shownotes 对质 */
+  const transcribeCandidates = async (cf: CaseFile, rt: any, s: any, maxCount = 3) => {
+    const asrKind: 'groq' | 'glm' = s.asrKind === 'glm' ? 'glm' : 'groq';
+    const asrKey = asrKind === 'glm' ? s.apiKey : s.groqApiKey;
+    if (!asrKey) {
+      logSinkRef.current('检索', '未配置 ASR Key：候选播客源不转录，以页面文本对质（比对深度受限）');
+      return;
+    }
+    const { locateEpisodeAudio } = await import('../providers/episodeLocate');
+    const { transcribeAudioUrl } = await import('../pipeline/transcribe');
+    const pool = (rt.sources as any[])
+      .filter((src) => /xiaoyuzhoufm\.com\/episode|podcasts\.apple\.com.*\?i=/.test(src.url || ''))
+      .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
+      .slice(0, maxCount);
+    for (const src of pool) {
+      if (src.fullText && src.fullText.length > 5000) continue; // 已有足量全文（可能是完整转录稿页）
+      try {
+        logSinkRef.current('检索', `候选源 ${src.id} 为播客单集（相似度 ${src.similarity ?? '?'}），启动转录取全文…`);
+        const located = await locateEpisodeAudio(src.url, { jinaKey: s.jinaApiKey || undefined });
+        if (!located.ok) {
+          logSinkRef.current('检索', `候选源 ${src.id} 音频定位失败：${located.reason.slice(0, 80)}`);
+          continue;
+        }
+        const { segments, fullText } = await transcribeAudioUrl(
+          located.audio.audioUrl,
+          { kind: asrKind, apiKey: asrKey },
+          (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}`),
+        );
+        if (fullText.length > 2000) {
+          src.fullText = fullText;
+          src.partial = false;
+          src.transcribed = true;
+          logSinkRef.current('检索', `候选源 ${src.id} 转录完成：${fullText.length} 字符，${segments.length} 段——以转录稿对质`);
+        }
+      } catch (e: any) {
+        logSinkRef.current('检索', `候选源 ${src.id} 转录失败（${String(e?.message || e).slice(0, 80)}），保留页面文本`);
+      }
+    }
+  };
+
   const scrollLog = useCallback(() => {
     requestAnimationFrame(() => {
       if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -248,6 +288,7 @@ export function App(): React.ReactElement {
       setRunning((r) => (r ? { ...r, stageIndex: 2, fingerprints: cf.fingerprints.length } : r));
       await pipeline.discovery(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
+      await transcribeCandidates(cf, rt, s);
       const evidence = await pipeline.crossExamination(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 4, evidence } : r));
 
