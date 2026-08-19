@@ -560,7 +560,7 @@ function VerdictView(props: {
         <div className="stamp">卫生法庭 · 宣判</div>
         <p className="verdict-rule">{v.rule}</p>
         <p className="verdict-rule" style={{ fontSize: 13 }}>
-          E1×{v.counts.E1} · E2×{v.counts.E2} · E3×{v.counts.E3} · E4×{v.counts.E4} · E5×{v.counts.E5} ｜ 来源标注：
+          错误照搬×{v.counts.E4} · 罕见材料×{v.counts.E3} · 论证链同构{v.counts.E2 ? '√' : '—'} · 句式直译×{v.counts.E5} ｜ 来源标注：
           {v.attribution === 'complete' ? '完整' : v.attribution === 'partial' ? '部分' : v.attribution === 'none' ? '无' : '不明'}
         </p>
       </section>
@@ -595,12 +595,17 @@ function VerdictView(props: {
           </tbody>
         </table>
 
-        <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{doc.evidence.length}）</h3>
-        {doc.evidence.length === 0 && <p className="hint">本案无命中证据。</p>}
-        {doc.evidence.map((e) => (
+        {(() => {
+          const positive = doc.evidence.filter((e: any) => e.level !== 'E1');
+          const negative = doc.evidence.filter((e: any) => e.level === 'E1');
+          return (
+            <>
+              <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{positive.length}）</h3>
+              {positive.length === 0 && <p className="hint">本案无命中证据——但这不是终点，见下方「已查证清单」。</p>}
+              {positive.map((e) => (
           <div className="evidence-card" key={e.id}>
             <div className="evidence-head">
-              <span className={'evidence-level ' + e.level}>{e.level} {plainLevelName(e.level)}</span>
+              <span className={'evidence-level ' + e.level}>{plainLevelName(e.level)}</span>
               <span className="evidence-id">{e.kind}</span>
               {e.examVerdict && (
                 <span className={e.examVerdict === 'expression_copy' ? 'evidence-id' : 'hint'} style={{ marginLeft: 8 }}>
@@ -638,7 +643,20 @@ function VerdictView(props: {
               ) : null;
             })()}
           </div>
-        ))}
+              ))}
+              {negative.length > 0 && (
+                <>
+                  <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>已查证清单（{negative.length}）——查过但未发现对应</h3>
+                  {negative.map((e: any) => (
+                    <div key={e.id} className="hint" style={{ marginBottom: 6, paddingLeft: 10, borderLeft: '2px solid var(--line, #ccc)' }}>
+                      {e.description}
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
+          );
+        })()}
 
         {doc.caseFile.leads.length > 0 && (
           <>
@@ -1002,7 +1020,7 @@ function About(): React.ReactElement {
       </table>
       <h3>裁决阈值</h3>
       <ul style={{ lineHeight: 1.9 }}>
-        <li>不卫生：发现「同一个错误」（错误被照搬），或长距离顺序 + 至少 3 处罕见材料对应</li>
+        <li>不卫生：发现「同一个错误」（源文的错误被照搬），或论证链同构（≥3 环节一致）+ 至少 3 处罕见材料对应</li>
         <li>可能不卫生：出现罕见材料或例子组合的对应，但数量或连贯性不足</li>
         <li>卫生：完成对质而未发现上述四种痕迹（未发现 ≠ 清白）</li>
         <li>休庭：内容不可得 / 无候选源 / 证据不足</li>

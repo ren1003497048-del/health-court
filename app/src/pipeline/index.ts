@@ -466,20 +466,23 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
         `目标文本（中文）：\n${targetSeg}\n\n候选源文本：\n${truncateSmart(src.fullText, 20000)}`,
         { maxTokens: 4096 },
       );
-      if (al.structureMatched) {
+      const chainSteps = (al.chainSteps || (al.alignments || []).length) as number;
+      if (al.structureMatched && chainSteps >= 3) {
         const located = (al.alignments || []).some((a: any) =>
           locateQuote(a.targetExcerpt, cf.target.text) || locateQuote(a.sourceExcerpt, src.fullText),
         );
         evidence.push({
           id: `EV-${src.id}-E2`,
           level: 'E2',
-          kind: '结构对齐',
-          description: `与 ${src.title.slice(0, 50)} 章节结构与叙事顺序一致（置信 ${al.confidence}）。${al.orderConsistency || ''}`,
+          kind: '论证链同构',
+          description: `与 ${src.title.slice(0, 50)} 的论证链有 ${chainSteps} 个环节同序对应（置信 ${al.confidence}）：${al.orderConsistency || ''}`,
           sourceId: src.id,
           targetQuoteLocated: located,
-          detail: { alignments: (al.alignments || []).slice(0, 8), publicDomainNote: al.publicDomainNote },
+          detail: { chainSteps, alignments: (al.alignments || []).slice(0, 8), publicDomainNote: al.publicDomainNote },
         });
-        rt.log('对质', `E2 结构信号：${src.id} structureMatched=${al.structureMatched}`);
+        rt.log('对质', `论证链同构：${src.id} ${chainSteps} 环节对应`);
+      } else if (al.structureMatched && chainSteps < 3) {
+        rt.log('对质', `${src.id} 结构相似但仅 ${chainSteps} 环节（<3），不构成论证链同构，忽略`);
       }
     } catch (e: any) {
       rt.log('对质', `结构对齐失败（${e.message.slice(0, 80)}）`);
@@ -541,7 +544,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   // 命中→产出 E3 候选（走后续检定）；未命中→产出 E1 级负面证据（已查证该源与目标无具体对应），
   // 让判决书的证据栏总是呈现"查了什么、查到什么、没查到什么"。
   const PROBE_SYSTEM =
-    'You are a detail comparison officer. Compare a Chinese podcast transcript excerpt against ONE candidate source text. Find the MOST SPECIFIC overlap between them (shared rare case, data combination, idiosyncratic phrasing, ordering, or error). If a specific overlap exists output found=true with BOTH verbatim quotes (target >=20 chars, source >=15 words); if the two merely share topic/theme or public facts, output found=false. Output only JSON: {"found":true|false,"targetQuote":"...","sourceQuote":"...","what":"what specifically overlaps (Chinese, one sentence)","type":"rare_case|data_combo|phrasing|ordering|error|none"}';
+    'You are a detail comparison officer. Compare a Chinese podcast transcript excerpt against ONE candidate source text. Find the MOST SPECIFIC overlap between them (shared rare case, data combination, idiosyncratic phrasing, argument-chain ordering, or error). QUOTES MUST BE CONTINUOUS PASSAGES, not isolated sentences: targetQuote = a coherent Chinese passage of at least 3 consecutive sentences (>=80 characters) from the transcript; sourceQuote = the corresponding continuous passage from the source (>=2 consecutive sentences). If the strongest overlap is only a single common sentence, a public fact, or mere topic-level similarity, output found=false. Output only JSON: {"found":true|false,"targetQuote":"...","sourceQuote":"...","what":"what specifically overlaps (Chinese, one sentence)","type":"rare_case|data_combo|phrasing|ordering|error|none"}';
   for (const src of rt.sources.slice(0, 3)) {
     if (!src.fullText || src.fullText.length < 400) continue;
     // 已有该源的 E3/E4 证据则跳过（不重复产证）
@@ -554,32 +557,39 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
         `目标转录稿（节选）：\n${targetSeg}\n\n候选源 ${src.id} 全文：\n${truncateSmart(src.fullText, 16000)}`,
         { maxTokens: 700 },
       );
-      if (pr.found && pr.targetQuote && pr.sourceQuote) {
-        const tLoc = locateQuote(pr.targetQuote, cf.target.text);
-        const sLoc = locateQuote(pr.sourceQuote, src.fullText);
+      const tQuote = String(pr.targetQuote || '');
+      const sQuote = String(pr.sourceQuote || '');
+      // v2.2.2 引文段落守卫：目标 ≥3 句连续（按句号计）且 ≥80 字，源 ≥2 句——孤句不成证
+      const tSents = (tQuote.match(/[。！？!?.]/g) || []).length;
+      const sSents = (sQuote.match(/[.!?。！？]/g) || []).length;
+      const passageOk = tQuote.length >= 80 && tSents >= 3 && sQuote.length >= 80 && sSents >= 2;
+      if (pr.found && tQuote && sQuote && passageOk) {
+        const tLoc = locateQuote(tQuote, cf.target.text);
+        const sLoc = locateQuote(sQuote, src.fullText);
         evidence.push({
           id: `EV-PROBE-${src.id}`,
           level: 'E3',
           kind: '细节比对',
           description: `细比对发现与 ${src.title.slice(0, 40)} 的具体重合点：${String(pr.what || '')}`,
-          targetQuote: String(pr.targetQuote),
+          targetQuote: tQuote,
           targetQuoteLocated: tLoc,
-          sourceQuote: String(pr.sourceQuote),
+          sourceQuote: sQuote,
           sourceQuoteLocated: sLoc,
           sourceId: src.id,
           detail: { probe: true, overlapType: pr.type, confidence: 0.8 },
         });
         rt.log('对质', `细比对命中：${src.id}（${pr.type}）→ 交付检定`);
       } else {
+        const why = pr.found && !passageOk ? '最接近的重合仅为孤立单句或公共事实，未构成连续段落级对应' : '两者仅在主题层面重合，或重合内容均属公共事实';
         evidence.push({
           id: `EV-NEG-${src.id}`,
           level: 'E1',
           kind: '已查证无对应',
-          description: `已将目标转录稿与 ${src.title.slice(0, 44)}（相似度 ${src.similarity ?? '?'}）逐项比对：未发现具体材料对应——两者仅在主题层面重合，或重合内容均属公共事实。`,
+          description: `已将目标转录稿与 ${src.title.slice(0, 44)}（相似度 ${src.similarity ?? '?'}）逐段比对：${why}。`,
           sourceId: src.id,
           detail: { negative: true },
         });
-        rt.log('对质', `细比对 ${src.id}：无具体对应（负面证据入卷）`);
+        rt.log('对质', `细比对 ${src.id}：无段落级对应（负面证据入卷）`);
       }
     } catch (e: any) {
       rt.log('对质', `细比对 ${src.id} 失败（${e.message.slice(0, 60)}）`);

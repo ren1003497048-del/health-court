@@ -66,17 +66,21 @@ export const ATTRIBUTION_SYSTEM = `你是卫生法庭的书记员。判断目标
 ${JSON_DISCIPLINE}
 输出 schema：{"attribution":"complete|partial|none|unknown","note":"依据（引用原文相关句子）"}`;
 
-export const ALIGN_SYSTEM = `你是卫生法庭的结构鉴定官。对目标文本（中文）与候选源文本（可能英文）做段落级语义对齐，判断叙事结构是否一致。
-方法：将目标切成约600字段、源切成约1200字符段，逐段找最佳对应。输出章节级对齐表与顺序一致性判断。
-注意：主题相同不算结构一致；要看章节划分、叙事顺序、详略取舍是否一致。公共历史素材（维基百科首屏内容）不算。
+export const ALIGN_SYSTEM = `你是卫生法庭的结构鉴定官。对目标文本（中文）与候选源文本（可能英文）做**论证链同构**检测——判断两边是否在同一集中段落内以一致顺序展开同一条论证链。
+方法（v2.2.2，吸收社区「主干-细节」标准）：
+1. 提取目标的一条论证链：论点 → 论据/例证（按出现顺序编号）→ 转折/反驳 → 结论。
+2. 在源文本中找对应的论证链，比对：环节是否一一对应、顺序是否一致、例证是否同一组。
+3. structureMatched=true 的唯一标准：**≥3 个环节（论点/例证/转折/结论）完全或几乎一致地对应**——这是集中接触痕迹，独立写作几乎不可能复现整条链。
+4. 以下不算：主题相同但各自展开；公共历史素材（教科书/维基首屏级）；只对应 1-2 个环节。
 ${WORDING_RULES}
 ${JSON_DISCIPLINE}
 输出 schema：
 {
  "structureMatched": true|false,
+ "chainSteps": 环节对应总数,
  "confidence": 0.0-1.0,
- "alignments":[{"targetSection":"目标章节概括","sourceSection":"源章节概括","correspondence":"强|中|弱","targetExcerpt":"目标原文引文(<=80字)","sourceExcerpt":"源原文引文(<=120字)"}],
- "orderConsistency": "顺序一致性说明",
+ "alignments":[{"step":1,"targetSection":"目标该环节概括","sourceSection":"源该环节概括","correspondence":"强|中|弱","targetExcerpt":"目标原文连续引文(30-120字)","sourceExcerpt":"源原文连续引文(40-200字)"}],
+ "orderConsistency": "链条顺序一致性说明",
  "publicDomainNote": "哪些部分属于公共素材的说明"
 }`;
 

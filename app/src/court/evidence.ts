@@ -21,20 +21,36 @@ export type VerdictWord = '不卫生' | '可能不卫生' | '卫生' | '休庭' 
  * 常识和单个事实的重合同样不计。
  */
 export const PLAIN_CRITERIA: Array<{ name: string; question: string; mapsTo: EvidenceLevel[] }> = [
-  { name: '长距离顺序', question: '对同一个话题，两边的讲述是否在很长的距离上保持同一展开顺序（章节推进、案例先后）？', mapsTo: ['E2'] },
-  { name: '罕见材料', question: '展开中是否出现同一个冷门案例、数据、怪词或错误（别处找不到的）？', mapsTo: ['E3', 'E4'] },
-  { name: '例子组合', question: '是否同一组例子以同样的组合方式被组织进论述（而非各讲各的）？', mapsTo: ['E3'] },
-  { name: '归因变化', question: '展开中引用的他人的话/经历/观点，是否被换成了自己的第一人称讲述？', mapsTo: ['E4', 'E3'] },
+  {
+    name: '论证链同构',
+    question: '两边是否在同一集中段落内，以完全或几乎一致的顺序展开同一条论证链（论点→论据→例证→转折→结论，≥3 个环节对应）？这是"集中接触痕迹"——独立写作几乎不可能复现整条链。',
+    mapsTo: ['E2'],
+  },
+  {
+    name: '罕见材料',
+    question: '展开中是否出现同一个冷门案例、数据组合、怪词或错误（在别处找不到、别处不会碰巧用上的）？',
+    mapsTo: ['E3', 'E4'],
+  },
+  {
+    name: '例证组合',
+    question: '是否同一组例子（≥2 个）以同样的组合与顺序被组织进论述（而非各讲各的常见例）？',
+    mapsTo: ['E3'],
+  },
+  {
+    name: '语气与错误',
+    question: '源文特有的语气、玩笑、立场，或源文的错误（含机器转录错误），是否被原样搬入目标？',
+    mapsTo: ['E4'],
+  },
 ];
 
 /** 证据等级 → 白话名（判决书用） */
 export function plainLevelName(level: EvidenceLevel): string {
   switch (level) {
-    case 'E4': return '同一个错误（错误被照搬）';
-    case 'E3': return '罕见材料或例子组合对应';
-    case 'E2': return '长距离顺序对应';
+    case 'E4': return '错误被照搬（几乎排除巧合）';
+    case 'E3': return '罕见材料或例证组合对应';
+    case 'E2': return '论证链同构（集中接触痕迹）';
     case 'E5': return '句式直译对应';
-    default: return '主题相同';
+    default: return '已查证无对应（负面查证）';
   }
 }
 
@@ -110,7 +126,7 @@ export function mapVerdict(
   if (stats.e4 >= 1) {
     return {
       word: '不卫生',
-      rule: 'E4 错误传播命中 ×' + stats.e4 + '：原文的错误（含机器转录错误）被复制，几乎排除巧合',
+      rule: '同一个错误被照搬 ×' + stats.e4 + '：源文的错误（含机器转录错误）被复制到目标——独立创作几乎不可能复现同一个错误',
       counts,
       attribution,
     };
@@ -119,7 +135,7 @@ export function mapVerdict(
   if (stats.e2 && stats.e3DistinctFingerprints >= 3) {
     return {
       word: '不卫生',
-      rule: 'E2 结构一致 + E3 细节指纹 ≥3 处独立命中（母项目「实锤」标准）',
+      rule: '论证链同构 + 罕见材料 ≥3 处独立对应（集中接触痕迹叠加，母项目「实锤」标准）',
       counts,
       attribution,
     };
@@ -130,10 +146,10 @@ export function mapVerdict(
       word: '可能不卫生',
       rule:
         stats.e3DistinctFingerprints >= 3
-          ? 'E3 指纹 ≥3 但结构对应未确认'
+          ? '罕见材料 ≥3 处对应，但论证链同构未确认'
           : stats.e3DistinctFingerprints >= 1
-            ? `E3 细节指纹 ${stats.e3DistinctFingerprints} 处命中，或 E1+E2 主题结构相似，现有证据不足以排除巧合`
-            : 'E1+E2 主题结构相似 / E5 直译腔多例，现有证据不足以排除巧合',
+            ? `罕见材料 ${stats.e3DistinctFingerprints} 处对应${stats.e1 && stats.e2 ? '，且整体结构相似' : ''}——现有证据不足以排除巧合`
+            : '主题与结构相似 / 句式直译多例——现有证据不足以排除巧合',
       counts,
       attribution,
     };

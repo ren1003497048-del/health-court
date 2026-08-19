@@ -28,11 +28,11 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
     .replace(/在 SRC(\d+) 命中/g, (_m, n) => `在候选源${n}中命中`)
     .replace(/← SRC(\d+)/g, (_m, n) => `← 候选源${n}`);
 
-  const evidenceRows = (doc.evidence || [])
+  const evidenceRows = (doc.evidence || []).filter((e: any) => e.level !== 'E1')
     .map(
       (e: any) => `
       <div class="ev">
-        <div class="ev-head"><span class="lv ${e.level}">${e.level} ${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.kind)}</span>${e.examVerdict ? `<span class="ev-id">${e.examVerdict === 'expression_copy' ? '' : '（线索级）'}检定：${esc(plainExamX(e.examVerdict))}</span>` : ''}</div>
+        <div class="ev-head"><span class="lv ${e.level}">${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.kind)}</span>${e.examVerdict ? `<span class="ev-id">${e.examVerdict === 'expression_copy' ? '' : '（线索级）'}检定：${esc(plainExamX(e.examVerdict))}</span>` : ''}</div>
         <div class="ev-desc">${esc(plainDesc(e.description))}</div>
         ${e.examNote ? `<div class="cc">检定理由：${esc(e.examNote)}</div>` : ''}
         ${e.targetQuote ? `<div class="q"><span class="ql">目标引文</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
@@ -113,7 +113,7 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
     <tr><th>取证时间</th><td>${esc(String(cf.target.fetchedAt || '').replace('T',' ').slice(0,19)) || '—'}</td></tr>
     <tr><th>案情摘要</th><td>${esc(cf.profile?.summaryZh || '—')}</td></tr>
     <tr><th>来源标注</th><td>${esc(v.attribution)}${cf.attributionNote ? '：' + esc(cf.attributionNote) : ''}</td></tr>
-    <tr><th>证据构成</th><td>E1×${v.counts.E1} · E2×${v.counts.E2} · E3×${v.counts.E3} · E4×${v.counts.E4} · E5×${v.counts.E5}</td></tr>
+    <tr><th>证据构成</th><td>错误照搬×${v.counts.E4} · 罕见材料×${v.counts.E3} · 论证链同构${v.counts.E2 ? '√' : '—'} · 句式直译×${v.counts.E5}</td></tr>
   </table>
 
   <div class="verdict-hero">
@@ -128,8 +128,9 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
     ${sourcesRows}
   </table>` : ''}
 
-  <h2 class="sec">证据清单（${(doc.evidence || []).length}）</h2>
-  ${evidenceRows || '<p>本案无命中证据。</p>'}
+  <h2 class="sec">证据清单（${(doc.evidence || []).filter((e: any) => e.level !== 'E1').length}）</h2>
+  ${(doc.evidence || []).filter((e: any) => e.level !== 'E1').length ? evidenceRows : '<p>本案无命中证据——见下方已查证清单。</p>'}
+  ${(doc.evidence || []).filter((e: any) => e.level === 'E1').length ? `<h2 class="sec">已查证清单（${(doc.evidence || []).filter((e: any) => e.level === 'E1').length}）——查过但未发现对应</h2>${(doc.evidence || []).filter((e: any) => e.level === 'E1').map((e: any) => `<div class="ev" style="opacity:.75"><div class="ev-desc">${esc(e.description)}</div></div>`).join('\n')}` : ''}
 
   ${leadsRows ? `<h2 class="sec">群众线报（${cf.leads.length}）</h2>${leadsRows}` : ''}
 
