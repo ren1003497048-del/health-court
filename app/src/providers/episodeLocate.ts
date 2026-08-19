@@ -27,6 +27,16 @@ export interface LocatedAudio {
 
 export type LocateResult = { ok: true; audio: LocatedAudio } | { ok: false; reason: string };
 
+/** dts-api 短链 → xyzcdn 直链：302 第一跳无 ACAO，浏览器 CORS 重定向链必断；路径内嵌终点，直接重拼绕开 */
+export function unwrapDtsUrl(url: string): string {
+  const m = url.match(/^https:\/\/dts-api\.xiaoyuzhoufm\.com\/track\/[^/]+\/[^/]+\/(.+)$/);
+  if (!m) return url;
+  const rest = m[1];
+  // 形态: media.xyzcdn.net/<pid>/<file>.m4a 或其他裸主机/路径
+  if (!/^https?:\/\//.test(rest) && rest.includes('/')) return `https://${rest}`;
+  return url;
+}
+
 /** 从 Apple URL 提取 podcast/episode 数字 ID */
 export function parseAppleIds(url: string): { podcastId: string; episodeId: string } | null {
   const m = url.match(/id(\d+)(?:\?i=(\d+))?/);
@@ -218,7 +228,7 @@ export async function locateEpisodeAudio(
           return {
             ok: true,
             audio: {
-              audioUrl: ep.episodeUrl,
+              audioUrl: unwrapDtsUrl(ep.episodeUrl),
               source: via,
               durationMs: ep.trackTimeMillis,
               releaseDate: ep.releaseDate,
@@ -233,7 +243,7 @@ export async function locateEpisodeAudio(
         return {
           ok: true,
           audio: {
-            audioUrl: ep.episodeUrl,
+            audioUrl: unwrapDtsUrl(ep.episodeUrl),
             source: via,
             durationMs: ep.trackTimeMillis,
             releaseDate: ep.releaseDate,
@@ -256,7 +266,7 @@ export async function locateEpisodeAudio(
           return {
             ok: true,
             audio: {
-              audioUrl: hit.audioUrl,
+              audioUrl: unwrapDtsUrl(hit.audioUrl),
               source: 'RSS feed（跨平台托管）',
               durationMs: hit.duration ? hit.duration * 1000 : undefined,
               episodeTitle: hit.title,

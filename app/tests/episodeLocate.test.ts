@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAppleIds, matchEpisodeFromRss, locateEpisodeAudio } from '../src/providers/episodeLocate';
+import { parseAppleIds, matchEpisodeFromRss, locateEpisodeAudio, unwrapDtsUrl } from '../src/providers/episodeLocate';
 
 describe('parseAppleIds', () => {
   it('提取 podcast id 与 ?i= 单集 id', () => {
@@ -178,5 +178,20 @@ describe('locateEpisodeAudio 集成（mock fetch）', () => {
     const r = await locateEpisodeAudio('https://podcasts.apple.com/cn/podcast/id123', { fetchImpl: fake });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason.length).toBeGreaterThan(5);
+  });
+});
+
+
+describe('unwrapDtsUrl（dts-api 302 无 ACAO → xyzcdn 直链变换）', () => {
+  it('dts-api 路径内嵌 xyzcdn 终点 → 直接重拼直链', () => {
+    expect(
+      unwrapDtsUrl(
+        'https://dts-api.xiaoyuzhoufm.com/track/64acd33c7a3d479103fbd32d/69cc1a0ce2c8be31550c581f/media.xyzcdn.net/64acd33c7a3d479103fbd32d/lhn7Gabj6_JkSzE2YveCtd3BTgsG.m4a',
+      ),
+    ).toBe('https://media.xyzcdn.net/64acd33c7a3d479103fbd32d/lhn7Gabj6_JkSzE2YveCtd3BTgsG.m4a');
+  });
+  it('已经是 xyzcdn/其他直链 → 原样返回', () => {
+    expect(unwrapDtsUrl('https://media.xyzcdn.net/a/b.m4a')).toBe('https://media.xyzcdn.net/a/b.m4a');
+    expect(unwrapDtsUrl('https://cdn.example.com/e.mp3')).toBe('https://cdn.example.com/e.mp3');
   });
 });
