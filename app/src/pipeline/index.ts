@@ -377,6 +377,19 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       rt.log('检索', `R1b 播客定向构造失败（${e.message.slice(0, 60)}），跳过`);
     }
   }
+  // R6 争议检索轮（v2.2.9，H6RNXM 案教训）：作品名+作者+抄袭/洗稿/争议/举报——
+  // 公开舆论中的指控报道往往直接列出被抄原作与对照段落（如 8·4 孙频事件报道列出余秀华原诗）。
+  // 线报不再只依赖目标页评论区——评论区的覆盖率远低于公开报道。
+  {
+    const author = cf.target.author || (cf.profile?.entities || [])[0] || '';
+    const workName = (cf.target.title || '').replace(/[《》"「」]/g, '').split(/[-—|]/)[0].trim();
+    if (author && workName && workName.length >= 2) {
+      const q1 = `${author} ${workName} 抄袭`;
+      const q2 = `${workName} 洗稿 OR 争议 OR 举报`;
+      queries.push({ tag: 'R6 争议', q: q1 }, { tag: 'R6 争议', q: q2 });
+      rt.log('检索', `R6 争议检索式 ×2：${q1} ｜ ${q2}`);
+    }
+  }
   // R2c 原文精确检索（v2.2.8，fiction 专用）：指纹中最具辨识度的连续引文逐字检索——
   // 找转载/抄袭/洗稿原文（转载页往往只保留原文，标题不含作品名）
   if (cf.profile?.mediaType === 'fiction') {
@@ -421,10 +434,25 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   }
   rt.log('检索', `共获不重复候选 ${candidates.length} 个，进入过滤与评分…`);
 
+  // —— v2.2.9 R6 争议报道单列（不参与对质——报道不是被抄对象，但作为外界指控呈堂）——
+  const controversyNotes: string[] = [];
+  const controversyCandidates = candidates.filter((c) => c.via.startsWith('R6'));
+  for (const c of controversyCandidates) {
+    const titleHit = /抄袭|洗稿|剽窃|抄袭风波|被指|争议/.test(c.doc.title || '') || /抄袭|洗稿|剽窃/.test(c.doc.snippet || '');
+    if (titleHit) {
+      controversyNotes.push(`${c.doc.title.slice(0, 60)}（${(c.doc.snippet || '').slice(0, 80)}…）${c.doc.url}`);
+    }
+  }
+  if (controversyNotes.length) {
+    rt.log('检索', `R6 发现公开抄袭指控报道 ${controversyNotes.length} 篇——转入「外界指控」栏呈堂`);
+    (rt as any).controversyNotes = controversyNotes;
+  }
+
   // —— 源卫生 + 质量闸门（确定性过滤，全部记录淘汰原因）——
   const targetDate = cf.target.date ? Date.parse(cf.target.date) : NaN;
   const filtered: { doc: { title: string; url: string; snippet: string; date?: string }; via: string }[] = [];
   for (const c of candidates) {
+    if (c.via.startsWith('R6')) continue; // 争议报道不入对质池（单列呈堂）
     const hyg = isMirrorOrGenericSource(
       { title: c.doc.title, url: c.doc.url, snippet: c.doc.snippet },
       { title: cf.target.title, url: cf.input.url, author: cf.target.author },
@@ -870,7 +898,7 @@ export async function verdictStage(
     const op = await chatJson<any>(
       rt.provider.chat,
       VERDICT_OPINION_SYSTEM,
-      `裁决词：${v.word}\n触发规则：${v.rule}\n案卷标题：${cf.target.title}\n案情摘要：${cf.profile?.summaryZh || ''}\n证据清单（按说服力排序，写意见时请引用证据序号与内容，不要只说"证据不足"）：\n${evidence.map((e, i) => `证据${i + 1}｜${plainLevelName(e.level)}｜${e.kind}${e.examVerdict ? `｜检定：${({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as any)[e.examVerdict] || e.examVerdict}` : ''}\n${e.description}\n  目标引文：${e.targetQuote || '（结构类证据，无单条引文）'}\n  源引文：${e.sourceQuote || '（见证据描述）'}${e.sourceQuoteLocated === false ? '（源引文未在源文本中定位，已降级）' : ''}`).join('\n')}\n候选源：${rt.sources.map((s) => `${s.id.replace('SRC', '候选源')} ${s.title}${s.transcribed ? '（已转录全文）' : s.partial ? '(部分取证)' : ''}`).join('；')}\n指纹候选总数：${cf.fingerprints.length}，命中：${distinctFps}\n写意见要求：先概括证据链整体形态（哪些源、什么类型的对应、强度如何），再指出最关键的 1-2 条证据及其引文内容，最后说明证据局限。不要出现 EV-、SRC、FP 等内部代号。`,
+      `裁决词：${v.word}\n触发规则：${v.rule}\n案卷标题：${cf.target.title}\n案情摘要：${cf.profile?.summaryZh || ''}\n证据清单（按说服力排序，写意见时请引用证据序号与内容，不要只说"证据不足"）：\n${evidence.map((e, i) => `证据${i + 1}｜${plainLevelName(e.level)}｜${e.kind}${e.examVerdict ? `｜检定：${({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as any)[e.examVerdict] || e.examVerdict}` : ''}\n${e.description}\n  目标引文：${e.targetQuote || '（结构类证据，无单条引文）'}\n  源引文：${e.sourceQuote || '（见证据描述）'}${e.sourceQuoteLocated === false ? '（源引文未在源文本中定位，已降级）' : ''}`).join('\n')}\n候选源：${rt.sources.map((s) => `${s.id.replace('SRC', '候选源')} ${s.title}${s.transcribed ? '（已转录全文）' : s.partial ? '(部分取证)' : ''}`).join('；')}\n指纹候选总数：${cf.fingerprints.length}，命中：${distinctFps}\n${((rt as any).controversyNotes as string[] | undefined)?.length ? `\n【外界指控】公开网络已有 ${((rt as any).controversyNotes as string[]).length} 篇针对该作品/作者的抄袭指控报道——写意见时必须提及此事，并说明本庭自动比对结果与外界指控的关系（一致/不一致/不可比），不得回避。` : ''}\n写意见要求：先概括证据链整体形态（哪些源、什么类型的对应、强度如何），再指出最关键的 1-2 条证据及其引文内容，最后说明证据局限。不要出现 EV-、SRC、FP 等内部代号。`,
       { maxTokens: 1200 },
     );
     opinion = cjkPunctNormalize(String(op.opinion || ''));
@@ -943,6 +971,11 @@ export function buildVerdictDoc(
   // v2.2.8 检索穷尽性声明（文学/出版物场景尤其重要：受版权保护的内容不在开放网络上）
   if (cf.profile?.mediaType === 'fiction' || cf.profile?.mediaType === 'article') {
     limits.push('检索穷尽性局限：受版权保护的作品正文（纸刊/付费墙/出版社平台）不在开放网络检索范围内——「未发现」仅指公开网络检索范围内未发现，不覆盖未数字化的出版物与需授权访问的内容');
+  }
+  // v2.2.9 外界指控呈堂：有公开抄袭指控报道时，判决书必须显式披露（即使本庭未发现接触痕迹）
+  const cNotes = (rt as any).controversyNotes as string[] | undefined;
+  if (cNotes?.length) {
+    limits.push(`【外界指控】公开网络存在 ${cNotes.length} 篇关于该作品/作者的抄袭指控报道（含被指原作信息）——本庭的自动比对未发现对应痕迹不代表指控不成立，请读者核验报道原文：${cNotes.slice(0, 3).join('；')}`);
   }
   // v2.2.9 归属链性质声明（用户指出：已发表≠原创——正式发表渠道只做编辑筛选不做原创核查）
   if (cf.attribution === 'complete' && rt.mirrorNotes?.length) {
