@@ -35,6 +35,7 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
         <div class="ev-head"><span class="lv ${e.level}">${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.kind)}</span>${e.examVerdict ? `<span class="ev-id">${e.examVerdict === 'expression_copy' ? '' : '（线索级）'}检定：${esc(plainExamX(e.examVerdict))}</span>` : ''}</div>
         <div class="ev-desc">${esc(plainDesc(e.description))}</div>
         ${e.examNote ? `<div class="cc">检定理由：${esc(e.examNote)}</div>` : ''}
+        ${e.detail?.macro && Array.isArray(e.detail.mappings) && e.detail.mappings.length ? `<div class="cc" style="padding-left:10px;border-left:2px solid #ccc"><b>大纲逐项对应（${e.detail.mappings.length} 项）：</b>${e.detail.mappings.map((m: any) => `<div>· 第${m.item ?? ''}项：${esc(m.note || '')}${m.sourceExcerpt ? `——源摘录：${esc(String(m.sourceExcerpt).slice(0, 100))}…` : ''}</div>`).join('')}</div>` : ''}
         ${e.targetQuote ? `<div class="q"><span class="ql">目标引文</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
         ${e.sourceQuote ? `<div class="q"><span class="ql">源引文</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
         ${(() => {

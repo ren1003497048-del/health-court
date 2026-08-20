@@ -627,6 +627,14 @@ function VerdictView(props: {
             </div>
             <div style={{ fontSize: 13.5 }}>{e.description.replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m: string, ty: string) => `指纹（${plainFpType(ty)}）`).replace(/在 SRC(\d+) 命中/g, (_m: string, n: string) => `在候选源${n}中命中`).replace(/← SRC(\d+)/g, (_m: string, n: string) => `← 候选源${n}`)}</div>
             {e.examNote && <div className="hint" style={{ marginTop: 4 }}>检定理由：{e.examNote}</div>}
+            {(e.detail as any)?.macro && Array.isArray((e.detail as any).mappings) && ((e.detail as any).mappings).length > 0 && (
+              <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.8, borderLeft: '2px solid var(--line, #ccc)', paddingLeft: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>大纲逐项对应（{(e.detail as any).mappings.length} 项）：</div>
+                {((e.detail as any).mappings).map((m: any, i: number) => (
+                  <div key={i}>· 第{(e.detail as any).mappings[i]?.item ?? i + 1}项：{m.note || ''}{m.sourceExcerpt ? <span style={{ opacity: 0.7 }}>——源摘录：{String(m.sourceExcerpt).slice(0, 100)}…</span> : null}</div>
+                ))}
+              </div>
+            )}
             {(e.targetQuote || e.sourceQuote) && (
               <div className="quote-pair">
                 {e.targetQuote && (

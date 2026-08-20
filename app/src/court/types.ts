@@ -73,6 +73,8 @@ export interface SourceDoc {
   similarity?: number;
   /** v2.2 候选源 AI 摘要（含语言、类型、主题、与目标重合点） */
   aiSummary?: string;
+  /** v2.2.6 候选源为播客单集且已自动转录取全文 */
+  transcribed?: boolean;
   /** v2.2 淘汰原因（不入卷时记录，透明可复核） */
   rejectedReason?: string;
 }

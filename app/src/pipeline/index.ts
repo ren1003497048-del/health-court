@@ -14,6 +14,7 @@ import { preReview, extractDate } from '../court/preReview';
 import { stripPageChrome, chromeRatio } from '../court/chromeStrip';
 import { applyFingerprintDiscipline, isMirrorOrGenericSource } from '../court/fingerprintDiscipline';
 import { cjkPunctNormalize } from '../court/textUtils';
+import { plainLevelName } from '../court/evidence';
 import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
@@ -181,9 +182,28 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
   };
   rt.log('侦查', `画像完成：${cf.profile.topicDomain}；指纹鉴定官提取指纹候选…`);
 
-  const fp = await chatJson<any>(rt.provider.chat, FINGERPRINT_SYSTEM, `目标文本：\n${text}`);
+  // v2.2.7 指纹提取分段全覆盖：长转录稿（如 22803 字符的 324 期）只看前 14000 会漏掉
+  // 后半段的最强指纹（142/31/43/55 佐治亚数据段在第 15547 字符处——AA3F00 案教训）
+  const full = cf.target.text;
+  const CHUNK = 12000;
+  const nChunks = Math.max(1, Math.ceil(full.length / CHUNK));
+  const fpParts: any[] = [];
+  for (let ci = 0; ci < Math.min(nChunks, 3); ci++) {
+    const segText = full.slice(ci * CHUNK, (ci + 1) * CHUNK);
+    try {
+      const fp = await chatJson<any>(
+        rt.provider.chat,
+        FINGERPRINT_SYSTEM,
+        `目标文本（第 ${ci + 1}/${Math.min(nChunks, 3)} 段）：\n${segText}`,
+      );
+      fpParts.push(...((fp.fingerprints || []) as any[]));
+    } catch (e: any) {
+      rt.log('侦查', `第 ${ci + 1} 段指纹提取失败（${e.message.slice(0, 50)}），跳过该段`);
+    }
+  }
+  const fp = { fingerprints: fpParts };
   cf.fingerprints = ((fp.fingerprints || []) as any[])
-    .slice(0, 12)
+    .slice(0, 14)
     .map((f, i) => ({
       id: 'FP' + (i + 1),
       type: (['weird_term', 'rare_case', 'data_combo', 'analogy', 'joke', 'ordering', 'other'].includes(f.type) ? f.type : 'other') as FingerprintCandidate['type'],
@@ -355,6 +375,8 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索（目标候选 ≥8）…`);
 
   const seen = new Set<string>();
+  // v2.2.7 跨店面同单集去重键（AA3F00 案：TRIH Part1 的 us/cm 两店同 episode id 重复入卷占两席）
+  const seenEpId = new Set<string>();
   const candidates: { doc: { title: string; url: string; snippet: string; date?: string }; via: string }[] = [];
   const mirrorNotes: string[] = [];
   const rejected: { title: string; reason: string }[] = [];
@@ -363,6 +385,12 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       const { docs } = await rt.provider.search(query);
       for (const d of docs) {
         if (!seen.has(d.url)) {
+          // ?i= 相同（无论哪个店面/域名）→ 同一单集，只留首个
+          const epId = (d.url.match(/[?&]i=(\d+)/) || [])[1];
+          if (epId) {
+            if (seenEpId.has(epId)) continue;
+            seenEpId.add(epId);
+          }
           seen.add(d.url);
           candidates.push({ doc: d, via: `${tag}：${query}` });
         }
@@ -487,6 +515,47 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   if (fetched.length < 8) {
     rt.log('检索', `⚠ 候选源不足 8 个（${fetched.length}），检索广度受限——已在 ${queries.length} 条检索式内尽力`);
   }
+  // v2.2.7 系列扩展（AA3F00 案教训：TRIH 四部曲只入卷 Part1，佐治亚数据在 Part2）：
+  // 入卷源标题含 "Part N" 且来自播客平台 → 检索同系列其他单集，补入 ≤2 个
+  try {
+    const seriesSrc = fetched.find(
+      (s) => /part\s*[0-9iv]+/i.test(s.title) && /podcasts\.apple|open\.spotify|musixmatch|getpodcast/.test(s.url),
+    );
+    if (seriesSrc) {
+      const seriesBase = seriesSrc.title.replace(/part\s*[0-9iv]+/i, '').replace(/\s{2,}/g, ' ').trim();
+      const curPart = (seriesSrc.title.match(/part\s*([0-9iv]+)/i) || [])[1];
+      if (seriesBase.length > 10) {
+        rt.log('检索', `检测到系列单集（Part ${curPart}）：${seriesBase.slice(0, 40)}——检索同系列其他单集…`);
+        const { docs: sdocs } = await rt.provider.search(`${seriesBase} podcast episode`);
+        for (const sd of (sdocs || []).slice(0, 8)) {
+          if (fetched.length >= 12) break;
+          if (!sd || !sd.url) continue;
+          const isSeries = new RegExp(seriesBase.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(sd.title || '');
+          const isOtherPart = /part\s*[0-9iv]+/i.test(sd.title || '') && !new RegExp(`part\\s*${curPart}\\b`, 'i').test(sd.title || '');
+          if (!isSeries || !isOtherPart) continue;
+          const epId = (sd.url.match(/[?&]i=(\d+)/) || [])[1];
+          if (epId && seenEpId.has(epId)) continue;
+          if (seen.has(sd.url)) continue;
+          if (epId) seenEpId.add(epId);
+          seen.add(sd.url);
+          fetched.push({
+            id: 'SRC' + (fetched.length + 1),
+            title: String(sd.title || ''),
+            url: String(sd.url),
+            date: sd.date,
+            snippet: sd.snippet,
+            fullText: '',
+            fetchedAt: new Date().toISOString(),
+            partial: true,
+            reversed: false,
+            origin: 'search',
+            viaQuery: `R5 系列扩展：${seriesBase.slice(0, 40)}`,
+          });
+          rt.log('检索', `系列扩展入卷：${String(sd.title || '').slice(0, 44)}`);
+        }
+      }
+    }
+  } catch { /* 系列扩展失败不阻塞 */ }
   rt.sources = fetched;
   rt.rejectedSources = rejected;
   return cf;
@@ -559,7 +628,12 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     'You map the argument structure of a Chinese podcast episode outline against ONE candidate source. For EACH outline item (usually 4-8), determine whether the source contains a SUBSTANTIAL corresponding section (not a passing mention): output {"item": 1, "found": true, "sourceExcerpt": "verbatim quote from source (>=15 words)", "note": "one-line Chinese note"} or found=false. Then output overall coverage = found items / total. Found means the source dedicates real discussion to that part of the argument, not just mentions the topic word. Output only JSON: {"mappings":[{"item":1,"found":true,"sourceExcerpt":"...","note":"..."}],"coverage":0.0,"verdictNote":"Chinese one-liner"}';
   const outlineItems = (cf.profile?.outline || []).slice(0, 8);
   if (outlineItems.length >= 3) {
-    for (const src of rt.sources.slice(0, 4)) {
+    // v2.2.7：已转录源优先（AA3F00 案教训：4条E2全指向通史百科——主题级映射人人满足，
+    // 转录稿源排在slice(0,4)之外根本轮不到）
+    const macroPool = [...rt.sources]
+      .sort((a, b) => (b.transcribed ? 1 : 0) - (a.transcribed ? 1 : 0))
+      .slice(0, 6);
+    for (const src of macroPool) {
       if (!src.fullText || src.fullText.length < 800) continue;
       if (evidence.some((e) => e.sourceId === src.id && e.level === 'E2')) continue;
       rt.log('对质', `宏观结构官比对 ${src.id}（${src.title.slice(0, 30)}）：目标大纲 ${outlineItems.length} 项映射…`);
@@ -773,7 +847,7 @@ export async function verdictStage(
     const op = await chatJson<any>(
       rt.provider.chat,
       VERDICT_OPINION_SYSTEM,
-      `裁决词：${v.word}\n触发规则：${v.rule}\n案卷标题：${cf.target.title}\n案情摘要：${cf.profile?.summaryZh || ''}\n证据清单：\n${evidence.map((e) => `${e.id} [${e.level}] ${e.description}\n  目标引文：${e.targetQuote || '无'}\n  源引文：${e.sourceQuote || '无'}${e.sourceQuoteLocated === false ? '（源引文未在源文本中定位）' : ''}`).join('\n')}\n候选源：${rt.sources.map((s) => `${s.id} ${s.title} ${s.partial ? '(部分取证)' : ''}`).join('；')}\n指纹候选总数：${cf.fingerprints.length}，命中：${distinctFps}`,
+      `裁决词：${v.word}\n触发规则：${v.rule}\n案卷标题：${cf.target.title}\n案情摘要：${cf.profile?.summaryZh || ''}\n证据清单（按说服力排序，写意见时请引用证据序号与内容，不要只说"证据不足"）：\n${evidence.map((e, i) => `证据${i + 1}｜${plainLevelName(e.level)}｜${e.kind}${e.examVerdict ? `｜检定：${({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as any)[e.examVerdict] || e.examVerdict}` : ''}\n${e.description}\n  目标引文：${e.targetQuote || '（结构类证据，无单条引文）'}\n  源引文：${e.sourceQuote || '（见证据描述）'}${e.sourceQuoteLocated === false ? '（源引文未在源文本中定位，已降级）' : ''}`).join('\n')}\n候选源：${rt.sources.map((s) => `${s.id.replace('SRC', '候选源')} ${s.title}${s.transcribed ? '（已转录全文）' : s.partial ? '(部分取证)' : ''}`).join('；')}\n指纹候选总数：${cf.fingerprints.length}，命中：${distinctFps}\n写意见要求：先概括证据链整体形态（哪些源、什么类型的对应、强度如何），再指出最关键的 1-2 条证据及其引文内容，最后说明证据局限。不要出现 EV-、SRC、FP 等内部代号。`,
       { maxTokens: 1200 },
     );
     opinion = cjkPunctNormalize(String(op.opinion || ''));
