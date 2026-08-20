@@ -313,16 +313,32 @@ function inferProgramName(cf: CaseFile): string | undefined {
 export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSources?: number }): Promise<CaseFile> {
   // v2.2：三轮足量检索（R0标题英文化 + R1主题 + R2指纹精确 + R3线报），目标 ≥8 候选源
   const maxSources = opts?.maxSources ?? 10;
-  const q = await chatJson<any>(
-    rt.provider.chat,
-    DISCOVERY_QUERY_SYSTEM,
-    `案情画像：${JSON.stringify({
-      topicDomain: cf.profile?.topicDomain,
-      coreClaims: cf.profile?.coreClaims,
-      entities: cf.profile?.entities,
-      outline: cf.profile?.outline,
-    }, null, 0)}\n\n指纹候选（id/类型/英文检索词）：${cf.fingerprints.map((f) => `${f.id} ${f.type} [${f.searchKeywordsEn.join('; ')}]`).join('\n')}\n\n群众线报：${cf.leads.map((l) => `${l.id} ${l.searchKeywordsEn.join('; ')}`).join('\n') || '无'}`,
-  );
+  // v2.2.12（ODCX8E 休庭案根因）：检索式生成必须容错——LLM 单点失败不能导致全案零检索。
+  // 失败时用确定性回退：画像英文实体 + 指纹英文检索词直查。
+  let q: any = { queries: {} };
+  try {
+    q = await chatJson<any>(
+      rt.provider.chat,
+      DISCOVERY_QUERY_SYSTEM,
+      `案情画像：${JSON.stringify({
+        topicDomain: cf.profile?.topicDomain,
+        coreClaims: cf.profile?.coreClaims,
+        entities: cf.profile?.entities,
+        outline: cf.profile?.outline,
+      }, null, 0)}\n\n指纹候选（id/类型/英文检索词）：${cf.fingerprints.map((f) => `${f.id} ${f.type} [${f.searchKeywordsEn.join('; ')}]`).join('\n')}\n\n群众线报：${cf.leads.map((l) => `${l.id} ${l.searchKeywordsEn.join('; ')}`).join('\n') || '无'}`,
+    );
+  } catch (e: any) {
+    rt.log('检索', `检索式生成失败（${String(e?.message || e).slice(0, 60)}）——改用确定性回退检索式`);
+    const enEnts = (cf.profile?.entities || []).filter((x) => /[A-Za-z]{4,}/.test(x)).slice(0, 3).join(' ');
+    const fpEns = cf.fingerprints.flatMap((f) => f.searchKeywordsEn).filter(Boolean).slice(0, 4);
+    q = {
+      queries: {
+        topic: enEnts ? [`${enEnts} podcast`] : [],
+        fingerprint: fpEns.map((kw) => ({ fingerprintId: 'AUTO', query: kw })),
+        leads: [],
+      },
+    };
+  }
 
   const queries: { tag: string; q: string }[] = [];
   (q.queries?.topic || []).slice(0, 3).forEach((qq: string) => queries.push({ tag: 'R1 主题', q: String(qq) }));
@@ -799,7 +815,9 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
       // v2.2.2 引文段落守卫：目标 ≥3 句连续（按句号计）且 ≥80 字，源 ≥2 句——孤句不成证
       const tSents = (tQuote.match(/[。！？!?.]/g) || []).length;
       const sSents = (sQuote.match(/[.!?。！？]/g) || []).length;
-      const passageOk = tQuote.length >= 80 && tSents >= 3 && sQuote.length >= 80 && sSents >= 2;
+      // v2.2.12（用户拍板）：长度不作硬卡点——≥30字且≥2句即可成证（原80字/3句拦掉了
+      // 短而致命的对应，如单句数据组合）；证据链完整性交给检定与复核环节综合判断
+      const passageOk = tQuote.length >= 30 && tSents >= 2 && sQuote.length >= 40 && sSents >= 2;
       if (pr.found && tQuote && sQuote && passageOk) {
         const tLoc = locateQuote(tQuote, cf.target.text);
         const sLoc = locateQuote(sQuote, src.fullText);

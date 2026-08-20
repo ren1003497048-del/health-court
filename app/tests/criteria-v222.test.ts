@@ -33,18 +33,18 @@ describe('v2.2.2 引文段落守卫（细比对）', () => {
   const passageOk = (tQuote: string, sQuote: string) => {
     const tSents = (tQuote.match(/[。！？!?.]/g) || []).length;
     const sSents = (sQuote.match(/[.!?。！？]/g) || []).length;
-    return tQuote.length >= 80 && tSents >= 3 && sQuote.length >= 80 && sSents >= 2;
+    return tQuote.length >= 30 && tSents >= 2 && sQuote.length >= 40 && sSents >= 2;
   };
-  it('孤句（5OODDG案形态：44字单句）不成证', () => {
+  it('单句（无句读切分）不成证——对应关系必须≥2句', () => {
     expect(passageOk('3K党无法代表美国历史，但是实际上，我们去看一整个3K党的崛起史，它就是充满了美国特色。', 'x'.repeat(90))).toBe(false);
   });
-  it('连续段落（≥3句≥80字 + 源≥2句）成证', () => {
-    const tp = '第一句论述在这里，我们从这个核心论点出发，展开整个讨论的框架。第二句给出具体的例证支撑，把抽象的论点落到可核查的历史材料上面。第三句完成转折与收束，回到最初提出的问题，并给出这一段的回答。';
-    const sp = 'The first sentence opens the argument and frames the whole discussion clearly here. The second sentence supplies the concrete evidence that grounds it. The third turns and concludes, returning to the opening question with an answer given.';
+  it('短而多句（30字+2句）成证（v2.2.12 放宽）', () => {
+    const tp = '1868年佐治亚发生142起暴力。其中31起谋杀，43起枪击。';
+    const sp = 'Georgia 1868: 142 incidents documented. Including 31 killings and 43 shootings.';
     expect(passageOk(tp, sp)).toBe(true);
   });
-  it('三短句但不足80字也不成证', () => {
-    expect(passageOk('一句。两句。三句。', 'Long enough source sentence one. Second source sentence here too.')).toBe(false);
+  it('不足30字不成证', () => {
+    expect(passageOk('一句。两句。', 'Long enough source sentence one. Second source sentence here too.')).toBe(false);
   });
 });
 
