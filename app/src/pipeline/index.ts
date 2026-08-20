@@ -944,6 +944,10 @@ export function buildVerdictDoc(
   if (cf.profile?.mediaType === 'fiction' || cf.profile?.mediaType === 'article') {
     limits.push('检索穷尽性局限：受版权保护的作品正文（纸刊/付费墙/出版社平台）不在开放网络检索范围内——「未发现」仅指公开网络检索范围内未发现，不覆盖未数字化的出版物与需授权访问的内容');
   }
+  // v2.2.9 归属链性质声明（用户指出：已发表≠原创——正式发表渠道只做编辑筛选不做原创核查）
+  if (cf.attribution === 'complete' && rt.mirrorNotes?.length) {
+    limits.push('归属链说明：上方归属信息只证明该内容的发布渠道与署名情况，不构成原创性证明——正式发表渠道（期刊/出版社/作协网站）不做原创性核查，本庭的「卫生」与否只取决于证据本身');
+  }
   limits.push(`指纹候选 ${cf.fingerprints.length} 个，检索候选源 ${rt.sources.length} 个（相似度排序，满分 100）；「未发现」不等于「证明清白」`);
   if (rt.rejectedSources?.length) {
     limits.push(`检索淘汰 ${rt.rejectedSources.length} 个候选：${rt.rejectedSources.slice(0, 6).map((r) => `${r.title.slice(0, 24)}（${r.reason}）`).join('；')}${rt.rejectedSources.length > 6 ? ' 等' : ''}`);

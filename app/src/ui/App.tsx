@@ -572,7 +572,7 @@ function VerdictView(props: {
         <p className="verdict-rule">{v.rule}</p>
         <p className="verdict-rule" style={{ fontSize: 13 }}>
           错误照搬×{v.counts.E4} · 罕见材料×{v.counts.E3} · 论证链同构{v.counts.E2 ? '√' : '—'} · 句式直译×{v.counts.E5} ｜ 来源标注：
-          {v.attribution === 'complete' ? '完整' : v.attribution === 'partial' ? '部分' : v.attribution === 'none' ? '无' : '不明'}
+          {v.attribution === 'complete' ? '完整（仅指发布署名，不证明原创）' : v.attribution === 'partial' ? '部分' : v.attribution === 'none' ? '无' : '不明'}
         </p>
       </section>
 
