@@ -395,3 +395,12 @@ textarea.input-main { min-height: 130px; resize: vertical; line-height: 1.7; }
   text-align: center;
   line-height: 1.8;
 }
+
+
+/* ===== v2.2.10 调色盘（左右分栏对照） ===== */
+.palette .quote-box { border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 1.9; }
+.palette .quote-box.target { background: rgba(107, 143, 113, 0.08); border: 1px solid rgba(107, 143, 113, 0.35); }
+.palette .quote-box.source { background: rgba(196, 168, 130, 0.10); border: 1px solid rgba(196, 168, 130, 0.4); }
+.palette .quote-label { display: block; font-size: 11px; letter-spacing: 0.04em; opacity: 0.8; margin-bottom: 6px; font-weight: 600; }
+.palette-text { white-space: pre-wrap; word-break: break-word; }
+@media (max-width: 760px) { .palette { grid-template-columns: 1fr !important; } }

@@ -76,6 +76,15 @@ export interface EvidenceItem {
   sourceId?: string;
   /** 复核意见（双模型时填写） */
   crossCheck?: { coincidenceRisk: '低' | '中' | '高'; note: string };
+  /** v2.2.10 证据卡源主体信息（可点击核验） */
+  sourceTitle?: string;
+  sourceUrl?: string;
+  sourceTranscribed?: boolean;
+  /** v2.2.11 人话标题（仿 podcastreview：'相同年份差错'式，替代等级+类型黑话） */
+  plainTitle?: string;
+  /** v2.2.11 第三人称转述对（源方转述 + 目标方转述，原始引文内嵌） */
+  sourceParaphrase?: string;
+  targetParaphrase?: string;
   /** v2.2.1 证据检定：expression_copy（独特表达复制）/ fact_relay（事实转述）/ generic_overlap（宏观表达重合）/ inconclusive */
   examVerdict?: 'expression_copy' | 'fact_relay' | 'generic_overlap' | 'inconclusive';
   /** v2.2.1 检定理由（白话，进判决书） */

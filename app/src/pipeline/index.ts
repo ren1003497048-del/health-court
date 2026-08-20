@@ -677,11 +677,14 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     : 'You map the argument structure of a Chinese podcast episode outline against ONE candidate source. For EACH outline item (usually 4-8), determine whether the source contains a SUBSTANTIAL corresponding section (not a passing mention): output {"item": 1, "found": true, "sourceExcerpt": "verbatim quote from source (>=15 words)", "note": "one-line Chinese note"} or found=false. Then output overall coverage = found items / total. Found means the source dedicates real discussion to that part of the argument, not just mentions the topic word. Output only JSON: {"mappings":[{"item":1,"found":true,"sourceExcerpt":"...","note":"..."}],"coverage":0.0,"verdictNote":"Chinese one-liner"}';
   const outlineItems = (cf.profile?.outline || []).slice(0, 8);
   if (outlineItems.length >= 3) {
-    // v2.2.7：已转录源优先（AA3F00 案教训：4条E2全指向通史百科——主题级映射人人满足，
-    // 转录稿源排在slice(0,4)之外根本轮不到）
-    const macroPool = [...rt.sources]
-      .sort((a, b) => (b.transcribed ? 1 : 0) - (a.transcribed ? 1 : 0))
-      .slice(0, 6);
+    // v2.2.10（89YX6D 案用户拍板）：宏观结构证据只对【已转录源】产出——
+    // 通史/百科源覆盖大纲是常识性主题映射（KKK 定义/三次崛起在任何 KKK 百科都"实质对应"），
+    // 不构成"集中接触痕迹"的信息量；未转录源只做注记。
+    const macroPool = rt.sources.filter((s) => s.transcribed).slice(0, 4);
+    const silentChecked = rt.sources.filter((s) => !s.transcribed && (s.fullText || '').length >= 800);
+    if (silentChecked.length) {
+      rt.log('对质', `宏观结构：${silentChecked.length} 个未转录源（通史/百科类）仅注记已比对，不产出结构证据（主题级覆盖不构成接触痕迹）`);
+    }
     for (const src of macroPool) {
       if (!src.fullText || src.fullText.length < 800) continue;
       if (evidence.some((e) => e.sourceId === src.id && e.level === 'E2')) continue;
@@ -715,21 +718,43 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     }
   }
 
-  // 4.2 指纹验证（对全部源）
-  const sourcesCtx = rt.sources
-    .map((s) => `【${s.id}】${s.title}\nURL: ${s.url}\n${s.fullText ? truncateSmart(s.fullText, 12000) : '(无全文，仅有摘要：' + (s.snippet || '') + ')'}`)
-    .join('\n\n========\n\n');
+  // 4.2 指纹验证（对全部源，v2.2.10 分段化：长源逐段送检，不再截断丢内容）
   const fpsCtx = cf.fingerprints
     .map((f) => `【${f.id}】type=${f.type} priority=${f.priority}\n引文：${f.targetQuote}\n说明：${f.note || ''}`)
     .join('\n');
 
-  rt.log('对质', `指纹验证官开始验证 ${cf.fingerprints.length} 个指纹 × ${rt.sources.length} 个源…`);
-  const fpRes = await chatJson<any>(
-    rt.provider.chat,
-    FPCHECK_SYSTEM,
-    `指纹候选：\n${fpsCtx}\n\n候选源文本：\n${sourcesCtx}`,
-    { maxTokens: 4096 },
-  );
+  // 分段策略：源全文 >24K 时按 12K 分段（滑窗 1K 防边界切断引文），每段独立送检
+  const SRC_SEG = 12000;
+  const segmentsOf = (s: SourceDoc): { label: string; text: string }[] => {
+    const ft = s.fullText || '';
+    if (!ft) return [{ label: s.id, text: '(无全文，仅有摘要：' + (s.snippet || '') + ')' }];
+    if (ft.length <= SRC_SEG * 2) return [{ label: s.id, text: truncateSmart(ft, 12000) }];
+    const segs: { label: string; text: string }[] = [];
+    for (let i = 0, si = 1; i < ft.length && si <= 6; i += SRC_SEG - 1000, si++) {
+      segs.push({ label: `${s.id}#${si}`, text: ft.slice(i, i + SRC_SEG) });
+    }
+    return segs;
+  };
+
+  rt.log('对质', `指纹验证官开始验证 ${cf.fingerprints.length} 个指纹 × ${rt.sources.length} 个源（长源分段送检）…`);
+  const allResults: any[] = [];
+  for (const s of rt.sources) {
+    const segs = segmentsOf(s);
+    for (const seg of segs) {
+      try {
+        const fpSeg = await chatJson<any>(
+          rt.provider.chat,
+          FPCHECK_SYSTEM,
+          `指纹候选：\n${fpsCtx}\n\n候选源文本（${seg.label}，可为空段）：\n${seg.text}`,
+          { maxTokens: 4096 },
+        );
+        for (const r of (fpSeg.results || []) as any[]) {
+          if (r && r.hit) allResults.push({ ...r, sourceId: seg.label.split('#')[0] });
+        }
+      } catch { /* 单段失败不阻塞 */ }
+    }
+  }
+  const fpRes = { results: allResults };
 
   const srcMap = new Map(rt.sources.map((s) => [s.id, s]));
   for (const r of (fpRes.results || []) as any[]) {
@@ -852,6 +877,36 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     } catch (e: any) {
       ev.examVerdict = 'inconclusive';
       rt.log('对质', `证据检定失败（${e.message.slice(0, 60)}），按无法判定处理`);
+    }
+  }
+
+  // v2.2.11 转述生成（仿 podcastreview 社区形态）：每条 E3/E4 证据产人话标题+第三人称转述对。
+  // 标题词表：相同差错/相同数字组合/相似冷门案例/相似例证组合/相似句式/相似叙事段/相似结尾/叙述主体变化…
+  const PARA_SYSTEM =
+    'You rewrite one piece of plagiarism evidence for a general reader, in the style of a community evidence page. Given the target quote and source quote, output: plainTitle = a 4-10 char Chinese noun phrase naming the KIND of correspondence using plain adjectives (相同差错 / 相同数字组合 / 相似冷门案例 / 相似例证组合 / 相似句式 / 相似叙事顺序 / 相似结尾 / 相似第一人称叙述 / 叙述主体变化 / 相似类比 ...), e.g. 相同年份差错; sourceParaphrase = ONE sentence in third person describing what the SOURCE says, embedding short key quotes (e.g. 原播客把…说成…); targetParaphrase = ONE sentence in third person describing what the TARGET says at the corresponding position (e.g. 节目说"…"，随后…). Neutral tone, no E-levels, no jargon. Output only JSON: {"plainTitle":"...","sourceParaphrase":"...","targetParaphrase":"..."}';
+  for (const ev of evidence) {
+    if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+    if (!ev.targetQuote || !ev.sourceQuote) continue;
+    try {
+      const pa = await chatJson<any>(
+        rt.provider.chat,
+        PARA_SYSTEM,
+        `目标引文（被检内容）：\n${ev.targetQuote}\n\n源引文（${ev.sourceTitle || ev.sourceId || '候选源'}）：\n${ev.sourceQuote}\n\n证据类型：${ev.kind}${(ev.detail as any)?.transcriptionError ? '（含错误传播）' : ''}`,
+        { maxTokens: 400 },
+      );
+      if (pa.plainTitle) ev.plainTitle = String(pa.plainTitle).slice(0, 12);
+      if (pa.sourceParaphrase) ev.sourceParaphrase = String(pa.sourceParaphrase);
+      if (pa.targetParaphrase) ev.targetParaphrase = String(pa.targetParaphrase);
+    } catch { /* 转述失败保留原引文呈现 */ }
+  }
+
+  // v2.2.10 证据卡源主体信息统一注入（可点击核验）
+  for (const ev of evidence) {
+    const s = rt.sources.find((x) => x.id === ev.sourceId);
+    if (s) {
+      ev.sourceTitle = s.title;
+      ev.sourceUrl = s.url;
+      ev.sourceTranscribed = !!s.transcribed;
     }
   }
 

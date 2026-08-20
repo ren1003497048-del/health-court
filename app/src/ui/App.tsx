@@ -571,6 +571,7 @@ function VerdictView(props: {
         {v.word === '可能卫生' && (
           <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4, letterSpacing: '0.02em' }}>请持续关注精神卫生。</div>
         )}
+        <a href="#evidence-list" style={{ display: 'inline-block', marginTop: 8, fontSize: 13, textDecoration: 'underline' }}>查看证据清单 ↓</a>
         <div className="stamp">卫生法庭 · 宣判</div>
         <p className="verdict-rule">{v.rule}</p>
         <p className="verdict-rule" style={{ fontSize: 13 }}>
@@ -614,20 +615,24 @@ function VerdictView(props: {
           const negative = doc.evidence.filter((e: any) => e.level === 'E1');
           return (
             <>
-              <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{positive.length}）</h3>
+              <h3 id="evidence-list" style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{positive.length}）</h3>
               {positive.length === 0 && <p className="hint">本案无命中证据——但这不是终点，见下方「已查证清单」。</p>}
               {positive.map((e) => (
-          <div className="evidence-card" key={e.id}>
+          <div className="evidence-card" key={e.id} id={`ev-${e.id}`}>
             <div className="evidence-head">
-              <span className={'evidence-level ' + e.level}>{plainLevelName(e.level)}</span>
-              <span className="evidence-id">{e.kind}</span>
-              {e.examVerdict && (
-                <span className={e.examVerdict === 'expression_copy' ? 'evidence-id' : 'hint'} style={{ marginLeft: 8 }}>
-                  检定：{plainExam(e.examVerdict)}
-                </span>
-              )}
-              {(e.detail as any)?.demoted && <span className="hint" style={{ marginLeft: 8 }}>（已降为线索级，不计入定案）</span>}
+              <span className={'evidence-level ' + e.level}>{e.plainTitle || plainLevelName(e.level)}</span>
+              <span className="evidence-id">{e.level === 'E4' ? '错误被复制' : e.level === 'E3' ? '具体对应' : e.level === 'E2' ? '结构对应' : '查证记录'}</span>
+              {(e.detail as any)?.demoted && <span className="hint" style={{ marginLeft: 8 }}>（线索级，不计入定案）</span>}
             </div>
+            {(e.targetParaphrase || e.sourceParaphrase) && (
+              <div style={{ marginTop: 6, fontSize: 13.5, lineHeight: 1.9 }}>
+                {e.sourceParaphrase && <div>{e.sourceParaphrase}</div>}
+                {e.targetParaphrase && <div>{e.targetParaphrase}</div>}
+              </div>
+            )}
+            {e.examVerdict && e.examVerdict !== 'expression_copy' && (
+              <div className="hint" style={{ marginTop: 4 }}>本条性质：{plainExam(e.examVerdict)}</div>
+            )}
             <div style={{ fontSize: 13.5 }}>{e.description.replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m: string, ty: string) => `指纹（${plainFpType(ty)}）`).replace(/在 SRC(\d+) 命中/g, (_m: string, n: string) => `在候选源${n}中命中`).replace(/← SRC(\d+)/g, (_m: string, n: string) => `← 候选源${n}`)}</div>
             {e.examNote && <div className="hint" style={{ marginTop: 4 }}>检定理由：{e.examNote}</div>}
             {(e.detail as any)?.macro && Array.isArray((e.detail as any).mappings) && ((e.detail as any).mappings).length > 0 && (
@@ -638,19 +643,26 @@ function VerdictView(props: {
                 ))}
               </div>
             )}
+            {e.sourceTitle && (
+              <div style={{ marginTop: 6, fontSize: 12.5 }}>
+                对比源：<a href={e.sourceUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>{e.sourceTitle}</a>
+                {e.sourceUrl ? ' ↗' : ''}
+                {e.sourceTranscribed ? '（已转录全文比对）' : '（页面文本比对）'}
+              </div>
+            )}
             {(e.targetQuote || e.sourceQuote) && (
-              <div className="quote-pair">
+              <div className="palette" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
                 {e.targetQuote && (
-                  <div className="quote-box target">
-                    <span className="quote-label">目标引文</span>
-                    {e.targetQuote}
+                  <div className="quote-box target" style={{ margin: 0 }}>
+                    <span className="quote-label">目标（被检内容）</span>
+                    <div className="palette-text">{e.targetQuote}</div>
                     {e.targetQuoteLocated === false && <span className="unlocated">未定位</span>}
                   </div>
                 )}
                 {e.sourceQuote && (
-                  <div className="quote-box source">
-                    <span className="quote-label">源引文</span>
-                    {e.sourceQuote}
+                  <div className="quote-box source" style={{ margin: 0 }}>
+                    <span className="quote-label">源（{e.sourceTitle ? e.sourceTitle.slice(0, 24) : '候选源'}）</span>
+                    <div className="palette-text">{e.sourceQuote}</div>
                     {e.sourceQuoteLocated === false && <span className="unlocated">未定位</span>}
                   </div>
                 )}

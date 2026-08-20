@@ -32,12 +32,16 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
     .map(
       (e: any) => `
       <div class="ev">
-        <div class="ev-head"><span class="lv ${e.level}">${esc(plainLevelName(e.level))}</span><span class="ev-id">${esc(e.kind)}</span>${e.examVerdict ? `<span class="ev-id">${e.examVerdict === 'expression_copy' ? '' : '（线索级）'}检定：${esc(plainExamX(e.examVerdict))}</span>` : ''}</div>
+        <div class="ev-head"><span class="lv ${e.level}">${esc(e.plainTitle || plainLevelName(e.level))}</span><span class="ev-id">${e.level === 'E4' ? '错误被复制' : e.level === 'E3' ? '具体对应' : e.level === 'E2' ? '结构对应' : '查证记录'}</span>${e.examVerdict && e.examVerdict !== 'expression_copy' ? `<span class="ev-id">（${esc(plainExamX(e.examVerdict))}）</span>` : ''}</div>
+        ${(e.sourceParaphrase || e.targetParaphrase) ? `<div class="ev-desc" style="margin-bottom:6px">${esc(e.sourceParaphrase || '')}${e.sourceParaphrase && e.targetParaphrase ? '<br/>' : ''}${esc(e.targetParaphrase || '')}</div>` : ''}
         <div class="ev-desc">${esc(plainDesc(e.description))}</div>
         ${e.examNote ? `<div class="cc">检定理由：${esc(e.examNote)}</div>` : ''}
         ${e.detail?.macro && Array.isArray(e.detail.mappings) && e.detail.mappings.length ? `<div class="cc" style="padding-left:10px;border-left:2px solid #ccc"><b>大纲逐项对应（${e.detail.mappings.length} 项）：</b>${e.detail.mappings.map((m: any) => `<div>· 第${m.item ?? ''}项：${esc(m.note || '')}${m.sourceExcerpt ? `——源摘录：${esc(String(m.sourceExcerpt).slice(0, 100))}…` : ''}</div>`).join('')}</div>` : ''}
-        ${e.targetQuote ? `<div class="q"><span class="ql">目标引文</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
-        ${e.sourceQuote ? `<div class="q"><span class="ql">源引文</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
+        ${e.sourceTitle ? `<div class="cc">对比源：<a href="${esc(e.sourceUrl || '#')}">${esc(e.sourceTitle)}</a>${e.sourceTranscribed ? '（已转录全文比对）' : '（页面文本比对）'}</div>` : ''}
+        ${(e.targetQuote || e.sourceQuote) ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        ${e.targetQuote ? `<div class="q" style="margin:0"><span class="ql">目标（被检内容）</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
+        ${e.sourceQuote ? `<div class="q" style="margin:0"><span class="ql">源（${esc((e.sourceTitle || '候选源').slice(0, 24))}）</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
+        </div>` : ''}
         ${(() => {
           const cc = (doc.crossChecks || []).find((c: any) => c.evidenceId === e.id);
           return cc ? `<div class="cc">独立复核：巧合风险「${esc(cc.risk)}」——${esc(cc.note)}</div>` : '';
