@@ -18,7 +18,7 @@ import { plainLevelName } from '../court/evidence';
 import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
-export const MIN_TARGET_CHARS = 500;
+export const MIN_TARGET_CHARS = 100; // 2026-08-20 用户拍板：文学节选/短篇从宽（原 500）
 export const MIN_EPISODE_MINUTES = 5;
 
 export interface StageLog {
@@ -174,6 +174,7 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
   const profile = await chatJson<any>(rt.provider.chat, PROFILE_SYSTEM, `目标文本：\n${text}`);
   cf.profile = {
     topicDomain: String(profile.topicDomain || ''),
+    mediaType: (['podcast', 'fiction', 'article', 'unknown'].includes(profile.mediaType) ? profile.mediaType : 'unknown') as any,
     coreClaims: (profile.coreClaims || []).map(String).slice(0, 10),
     outline: (profile.outline || []).map(String).slice(0, 15),
     entities: (profile.entities || []).map(String).slice(0, 25),
@@ -282,7 +283,9 @@ export async function buildTitleQueryEn(cf: CaseFile, rt: CourtRuntime): Promise
   try {
     const r = await chatJson<any>(
       rt.provider.chat,
-      'You translate a Chinese podcast episode title into ONE precise English web-search query that would find ORIGINAL English-language sources (books, podcasts, essays) discussing the same subject. Output only JSON: {"query":"english query"}. Keep proper nouns. Add none or one of: podcast / book / essay - only if it helps find original sources, not Chinese reposts.',
+      cf.profile?.mediaType === 'fiction'
+        ? 'You craft ONE precise web-search query to find PUBLICATIONS and DISCUSSIONS of a Chinese literary work (novella/novel/story): reviews, literary journals, reprint/serialization pages, author interviews. Combine the work title (translated if known) + author name + one of: review / 小说 / 作品. Do NOT search for imagery or plot elements (peach garden etc) - search for THE WORK ITSELF. Output only JSON: {"query":"query"}.'
+        : 'You translate a Chinese podcast episode title into ONE precise English web-search query that would find ORIGINAL English-language sources (books, podcasts, essays) discussing the same subject. Output only JSON: {"query":"english query"}. Keep proper nouns. Add none or one of: podcast / book / essay - only if it helps find original sources, not Chinese reposts.',
       `标题：${t}\n主题域：${cf.profile?.topicDomain || ''}\n画像实体：${(cf.profile?.entities || []).slice(0, 10).join('；')}`,
     );
     const q = String(r.query || '').trim();
@@ -337,7 +340,9 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   }
   // R1b 播客定向轮（v2.2.3，FDLMYH 案根因修复）：目标内容是播客时，源大概率也是播客。
   // 用画像里最独特的叙事细节（不是通史词）+ podcast 意图词构造检索式——通史式查询永远搜不到播客单集。
-  const isPodcast = /podcast/.test(cf.target.contentType || '') || /xiaoyuzhoufm|podcasts\.apple/.test(cf.input.url || '');
+  const isPodcast =
+    (/podcast/.test(cf.target.contentType || '') || /xiaoyuzhoufm|podcasts\.apple/.test(cf.input.url || '')) &&
+    cf.profile?.mediaType !== 'fiction'; // v2.2.8 文学不加 podcast 意图词（H6RNXM 案：小说检索成桃园结义播客）
   if (isPodcast && cf.profile) {
     try {
       const pq = await chatJson<any>(
@@ -371,6 +376,20 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     } catch (e: any) {
       rt.log('检索', `R1b 播客定向构造失败（${e.message.slice(0, 60)}），跳过`);
     }
+  }
+  // R2c 原文精确检索（v2.2.8，fiction 专用）：指纹中最具辨识度的连续引文逐字检索——
+  // 找转载/抄袭/洗稿原文（转载页往往只保留原文，标题不含作品名）
+  if (cf.profile?.mediaType === 'fiction') {
+    const quoteFps = cf.fingerprints
+      .filter((f) => f.targetQuote.replace(/\s/g, '').length >= 20)
+      .slice(0, 3);
+    for (const f of quoteFps) {
+      // 中文引文直接检索（中文原文转载在中文站）；截取中段最特异片段（开头结尾易被改写）
+      const raw = f.targetQuote.replace(/\s+/g, '');
+      const mid = raw.slice(Math.max(0, Math.floor(raw.length * 0.2)), Math.floor(raw.length * 0.2) + 24);
+      if (mid.length >= 16) queries.push({ tag: `R2c 原文 ${f.id}`, q: `"${mid}"` });
+    }
+    if (quoteFps.length) rt.log('检索', `R2c 原文精确检索式 ×${quoteFps.length}（指纹引文逐字，找转载/抄袭页）`);
   }
   rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索（目标候选 ≥8）…`);
 
@@ -624,8 +643,10 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   // 4.1c v2.2.6 宏观结构对比（用户决策：不能只抽点做事实对比，必须先看宏观/结构层）：
   // 目标画像 outline 逐项在源全文中找对应段——输出映射覆盖率。≥60% 环节有实质对应 → E2 候选。
   // 这是母项目维度B（主干-细节）的操作化：论证骨架对应，不依赖零散指纹。
-  const MACRO_SYSTEM =
-    'You map the argument structure of a Chinese podcast episode outline against ONE candidate source. For EACH outline item (usually 4-8), determine whether the source contains a SUBSTANTIAL corresponding section (not a passing mention): output {"item": 1, "found": true, "sourceExcerpt": "verbatim quote from source (>=15 words)", "note": "one-line Chinese note"} or found=false. Then output overall coverage = found items / total. Found means the source dedicates real discussion to that part of the argument, not just mentions the topic word. Output only JSON: {"mappings":[{"item":1,"found":true,"sourceExcerpt":"...","note":"..."}],"coverage":0.0,"verdictNote":"Chinese one-liner"}';
+  const isFiction = cf.profile?.mediaType === 'fiction';
+  const MACRO_SYSTEM = isFiction
+    ? 'You map the NARRATIVE structure of a Chinese literary work (story opening / setting / characters / key scenes / ending as outlined) against ONE candidate source. For EACH outline item, determine whether the source contains a SUBSTANTIAL corresponding narrative section (a scene retelling, excerpt, or detailed synopsis - not a passing mention of a similar image): output {"item": 1, "found": true, "sourceExcerpt": "verbatim quote from source (>=15 chars)", "note": "one-line Chinese note"} or found=false. Coverage = found/total. Output only JSON: {"mappings":[{"item":1,"found":true,"sourceExcerpt":"...","note":"..."}],"coverage":0.0,"verdictNote":"Chinese one-liner"}'
+    : 'You map the argument structure of a Chinese podcast episode outline against ONE candidate source. For EACH outline item (usually 4-8), determine whether the source contains a SUBSTANTIAL corresponding section (not a passing mention): output {"item": 1, "found": true, "sourceExcerpt": "verbatim quote from source (>=15 words)", "note": "one-line Chinese note"} or found=false. Then output overall coverage = found items / total. Found means the source dedicates real discussion to that part of the argument, not just mentions the topic word. Output only JSON: {"mappings":[{"item":1,"found":true,"sourceExcerpt":"...","note":"..."}],"coverage":0.0,"verdictNote":"Chinese one-liner"}';
   const outlineItems = (cf.profile?.outline || []).slice(0, 8);
   if (outlineItems.length >= 3) {
     // v2.2.7：已转录源优先（AA3F00 案教训：4条E2全指向通史百科——主题级映射人人满足，
@@ -762,7 +783,9 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   // v2.2.1 证据检定（用户决策：必须区分"独特表达复制"与"事实转述/宏观表达"）：
   // 每条 E3/E2 证据由 LLM 独立检定四分类；非 expression_copy 的 E3 降级为"线索级"不计入定案统计。
   const EXAM_SYSTEM =
-    'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell (e.g. source quote too generic or truncated). Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}';
+    cf.profile?.mediaType === 'fiction'
+      ? 'You are an evidence examiner for LITERARY texts distinguishing genuine copying from innocent overlap. Given a target quote (Chinese fiction) and a source quote, classify: expression_copy = the two share SPECIFIC literary formulation unique to the source (same idiosyncratic image, same unusual name/place, same sentence-level phrasing, same narrative detail sequence) - something an independent writer would NOT coincidentally produce; fact_relay = both reference the same public fact/work/allusion in their own words; generic_overlap = both use a common literary trope or theme (reunion, nostalgia, a peach garden as beauty) without specific shared details; inconclusive = cannot tell. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}'
+      : 'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell (e.g. source quote too generic or truncated). Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}';
   const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
@@ -917,6 +940,10 @@ export function buildVerdictDoc(
   const unlocated = evidence.filter((e) => e.sourceQuote && e.sourceQuoteLocated === false);
   if (unlocated.length) limits.push(`${unlocated.length} 条证据的源引文未能在源文本中定位（防幻觉校验未通过），已降级展示`);
   if (!cf.target.comments) limits.push('未获取到评论区数据，群众线报通道未启用');
+  // v2.2.8 检索穷尽性声明（文学/出版物场景尤其重要：受版权保护的内容不在开放网络上）
+  if (cf.profile?.mediaType === 'fiction' || cf.profile?.mediaType === 'article') {
+    limits.push('检索穷尽性局限：受版权保护的作品正文（纸刊/付费墙/出版社平台）不在开放网络检索范围内——「未发现」仅指公开网络检索范围内未发现，不覆盖未数字化的出版物与需授权访问的内容');
+  }
   limits.push(`指纹候选 ${cf.fingerprints.length} 个，检索候选源 ${rt.sources.length} 个（相似度排序，满分 100）；「未发现」不等于「证明清白」`);
   if (rt.rejectedSources?.length) {
     limits.push(`检索淘汰 ${rt.rejectedSources.length} 个候选：${rt.rejectedSources.slice(0, 6).map((r) => `${r.title.slice(0, 24)}（${r.reason}）`).join('；')}${rt.rejectedSources.length > 6 ? ' 等' : ''}`);

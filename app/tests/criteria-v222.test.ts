@@ -154,3 +154,24 @@ describe('v2.2.6 搜索垃圾页闸门（K5B292 案：Try searching for it 占�
     expect(junk('The Ku Klux Klan: The Rise of Evil (Part 1)')).toBe(false);
   });
 });
+
+
+describe('v2.2.8 媒介感知检索（H6RNXM 案：小说被检索成桃园结义播客）', () => {
+  it('fiction 媒介：R1b 播客定向轮不触发', () => {
+    const isPodcast = (ct: string, url: string, mediaType?: string) =>
+      (/podcast/.test(ct || '') || /xiaoyuzhoufm|podcasts\.apple/.test(url || '')) && mediaType !== 'fiction';
+    expect(isPodcast('unknown', '', 'fiction')).toBe(false);
+    expect(isPodcast('podcast_with_transcript', '', 'podcast')).toBe(true);
+    expect(isPodcast('podcast_with_transcript', '', undefined)).toBe(true);
+  });
+  it('R2c 引文截取：中段 24 字（开头结尾易被改写）', () => {
+    const raw = '那条母狗叫花花他几乎是挨家挨户地找逢人就问有没有看见我的狗他找了好久后来终于在一户人家找到了'.replace(/\s+/g, '');
+    const mid = raw.slice(Math.floor(raw.length * 0.2), Math.floor(raw.length * 0.2) + 24);
+    expect(mid.length).toBe(24);
+    expect(mid).not.toBe(raw.slice(0, 24)); // 不是开头
+  });
+  it('立案门槛 100 字（文学节选从宽）', async () => {
+    const mod = await import('../src/pipeline/index');
+    expect((mod as any).MIN_TARGET_CHARS).toBe(100);
+  });
+});

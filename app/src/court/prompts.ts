@@ -15,6 +15,7 @@ ${JSON_DISCIPLINE}
 输出 schema：
 {
  "topicDomain": "主题域（一句话）",
+ "mediaType": "podcast|fiction|article|unknown（媒介类型：播客单集=播客转录稿特征（口语、主持人、时间戳）；fiction=文学创作（小说/散文/诗歌：叙事性、意象、虚构人名地名）；article=文章/评论（论说文）；unknown=无法判断）",
  "coreClaims": ["核心论点1", "..."],
  "outline": ["章节1标题或一句话概括", "..."],
  "entities": ["关键实体：人名/书名/事件/机构/数据", "..."],

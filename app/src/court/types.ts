@@ -39,6 +39,8 @@ export interface CaseFile {
 }
 
 export interface CaseProfile {
+  /** v2.2.8 媒介类型（决定检索策略与对质方式）：podcast | fiction | article | unknown */
+  mediaType?: 'podcast' | 'fiction' | 'article' | 'unknown';
   topicDomain: string;
   coreClaims: string[];
   outline: string[];
