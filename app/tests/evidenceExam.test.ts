@@ -19,7 +19,7 @@ describe('v2.2.1 证据检定对裁决的影响（降级不计入）', () => {
     const v = mapVerdict(stats as any, 'complete', true, true);
     // e3=0 → 不该走 E3 触发分支
     expect(v.counts.E3).toBe(0);
-    expect(['卫生', '存疑', '可能不卫生'].includes(v.word)).toBe(true);
+    expect(['可能卫生', '存疑', '可能不卫生'].includes(v.word)).toBe(true);
     if (v.counts.E3 === 0 && v.counts.E4 === 0) expect(v.word).not.toBe('不卫生');
   });
 

@@ -24,7 +24,7 @@ describe('v2.2.2 判据重定义与白话呈现', () => {
 
   it('E3×1 检定降级后裁决回落（不触发可能不卫生）', () => {
     const v = mapVerdict({ e4: 0, e3: 0, e3DistinctFingerprints: 0, e2: false, e1: true, e5: 0 } as any, 'complete', true, true);
-    expect(v.word).toBe('卫生');
+    expect(v.word).toBe('可能卫生');
   });
 });
 

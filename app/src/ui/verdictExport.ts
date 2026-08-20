@@ -118,7 +118,8 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
   </table>
 
   <div class="verdict-hero">
-    <p class="verdict-word">${esc(v.word)}</p>
+    <p class="verdict-word ${esc(v.word)}">${esc(v.word)}</p>
+    ${v.word === '可能卫生' ? '<div style="font-size:12px;opacity:.75;margin-top:4px">请持续关注精神卫生。</div>' : ''}
     <div class="stamp">卫生法庭 · 宣判</div>
     <p class="verdict-rule">${esc(v.rule)}</p>
   </div>

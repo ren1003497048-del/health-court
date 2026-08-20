@@ -12,7 +12,7 @@ export const EVIDENCE_LEVEL_INFO: Record<EvidenceLevel, { name: string; desc: st
   E5: { name: '翻译腔/措辞', desc: '中文表述是外文原句的直译腔（中，需多例）' },
 };
 
-export type VerdictWord = '不卫生' | '可能不卫生' | '卫生' | '休庭' | '不予受理';
+export type VerdictWord = '不卫生' | '可能不卫生' | '可能卫生' | '卫生' | '休庭' | '不予受理';
 
 /**
  * 白话判据表（2026-08-19 用户拍板）：
@@ -164,12 +164,19 @@ export function mapVerdict(
     };
   }
 
+  // 2026-08-20 用户拍板：不输出绝对化的「卫生」——检索原理性不穷尽（版权墙/未数字化内容不可达），
+  // 清洁结论只能是「可能卫生」，与「可能不卫生」形成对称的存疑结构，由读者自行判断。
   return {
-    word: '卫生',
-    rule: '就本案核查范围（见核查范围与局限栏），三维度均未发现来源依赖痕迹；「未发现」不等于「证明清白」',
+    word: '可能卫生',
+    rule: '就本案核查范围（见核查范围与局限栏），各维度均未发现来源依赖痕迹——但检索不覆盖版权墙内与未数字化内容，「未发现」不等于「证明清白」',
     counts,
     attribution,
   };
+}
+
+/** 兼容旧档案（localStorage 里的历史判决书 word=卫生）：读取时映射为可能卫生 */
+export function normalizeVerdictWord(w: string): VerdictWord {
+  return w === '卫生' ? '可能卫生' : (w as VerdictWord);
 }
 
 /** 候选源质量闸门（P0-4）：低于此阈值的候选源不得入卷参与对质 */

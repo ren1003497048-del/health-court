@@ -298,6 +298,7 @@ textarea.input-main { min-height: 130px; resize: vertical; line-height: 1.7; }
 .verdict-word.不卫生 { color: var(--vermillion); }
 .verdict-word.可能不卫生 { color: #b07a1e; }
 .verdict-word.卫生 { color: var(--green); }
+.verdict-word.可能卫生 { color: #4c8a5a; }
 .verdict-word.休庭, .verdict-word.不予受理 { color: var(--ink-soft); }
 .verdict-rule { font-size: 14.5px; color: var(--ink-soft); max-width: 640px; margin: 0 auto 6px; line-height: 1.8; }
 .stamp {

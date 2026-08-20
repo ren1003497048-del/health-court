@@ -568,6 +568,9 @@ function VerdictView(props: {
       <section className="panel verdict-stage-panel focus-lines">
         <span className="gavel">🔨</span>
         <div className={'verdict-word ' + v.word}>{v.word}</div>
+        {v.word === '可能卫生' && (
+          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4, letterSpacing: '0.02em' }}>请持续关注精神卫生。</div>
+        )}
         <div className="stamp">卫生法庭 · 宣判</div>
         <p className="verdict-rule">{v.rule}</p>
         <p className="verdict-rule" style={{ fontSize: 13 }}>

@@ -25,13 +25,13 @@ describe('裁决映射（PRD §4.2 阈值）', () => {
   });
   it('E5 ≥2 → 可能不卫生；E5=1 → 不构成', () => {
     expect(mapVerdict({ ...base, e5: 2 }, 'none', usable, true).word).toBe('可能不卫生');
-    expect(mapVerdict({ ...base, e5: 1 }, 'none', usable, true).word).toBe('卫生');
+    expect(mapVerdict({ ...base, e5: 1 }, 'none', usable, true).word).toBe('可能卫生');
   });
   it('署名完整不再短路：E4 命中照样不卫生（P0 修正·364案）', () => {
     expect(mapVerdict({ ...base, e4: 1 }, 'complete', usable, true).word).toBe('不卫生');
   });
   it('署名完整且无指纹命中 → 卫生（注记署名）', () => {
-    expect(mapVerdict(base, 'complete', usable, true).word).toBe('卫生');
+    expect(mapVerdict(base, 'complete', usable, true).word).toBe('可能卫生');
   });
   it('内容不可用 → 休庭（优先于一切）', () => {
     expect(mapVerdict({ ...base, e4: 1 }, 'none', false, true).word).toBe('休庭');
@@ -41,7 +41,7 @@ describe('裁决映射（PRD §4.2 阈值）', () => {
   });
   it('干净 → 卫生且 rule 说明未发现≠清白', () => {
     const v = mapVerdict(base, 'none', usable, true);
-    expect(v.word).toBe('卫生');
+    expect(v.word).toBe('可能卫生');
     expect(v.rule).toContain('不等于');
   });
   it('E3≥3 但无 E2 → 可能不卫生（措辞保持克制）', () => {
