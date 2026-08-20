@@ -12,6 +12,8 @@ export interface CommunityLead {
 }
 
 export interface CaseFile {
+  /** v3 多智能体庭审记录（判决书附录：每个角色的动作留痕） */
+  trialLog?: { at: string; role: string; action: string; detail?: string }[];
   caseId: string;
   createdAt: string;
   input: { url?: string; text?: string };

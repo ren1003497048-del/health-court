@@ -965,8 +965,37 @@ export async function verdictStage(
 
   rt.log('宣判', `裁决计算完成：${v.word}（${v.rule}）`);
 
-  // 法官意见
+  // v3 多智能体庭审（P3）：公诉人立论 → 辩护人驳斥 → 法官判词
+  // 上下文隔离：控辩双方只读结构化证据清单；判词输入=控辩对抗材料（天然平衡）
+  const { Orchestrator } = await import('../court/agents/orchestrator');
+  const { runProsecutor } = await import('../court/agents/prosecutor');
+  const { runDefender } = await import('../court/agents/defender');
+  const { runJudge } = await import('../court/agents/judge');
+  const orch = new Orchestrator(cf.caseId);
+  const chatFn = (system: string, user: string, opts?: { maxTokens?: number }) =>
+    import('../providers/glm').then(() => chatJson<any>(rt.provider.chat, system, user, opts));
+  cf.trialLog = orch.session.agentLog;
+
+  let brief: import('../court/agents/prosecutor').ProsecutionBrief | null = null;
+  let rebuttal: import('../court/agents/defender').DefenseRebuttal | null = null;
+  const positiveEv = evidence.filter((e) => e.level === 'E2' || e.level === 'E3' || e.level === 'E4');
+  if (positiveEv.length) {
+    rt.log('宣判', '公诉人立论…');
+    brief = await runProsecutor(orch, chatFn, evidence, rt.sources, cf.target.title);
+    rt.log('宣判', '辩护人驳斥…');
+    rebuttal = await runDefender(orch, chatFn, evidence, brief!, cf.target.title);
+  } else {
+    orch.note('orchestrator', '无正面证据——控辩双方不出庭，直接宣判');
+  }
+  cf.trialLog = [...orch.session.agentLog];
+
+  // 法官判词
   let opinion = '';
+  const judgeOp = await runJudge(orch, chatFn, v.word, v.rule, evidence, brief, rebuttal, cf.target.title);
+  if (judgeOp?.opinion) {
+    opinion = judgeOp.opinion;
+    cf.trialLog = [...orch.session.agentLog];
+  } else
   try {
     const op = await chatJson<any>(
       rt.provider.chat,
@@ -998,7 +1027,7 @@ export async function verdictStage(
     }
   }
 
-  return buildVerdictDoc(cf, rt, evidence, v, opinion, crossChecks);
+  return buildVerdictDoc(cf, rt, evidence, v, opinion, crossChecks, { brief, rebuttal });
 }
 
 // mapVerdict 的公开包装（避免内核层反向依赖流水线）
@@ -1018,6 +1047,9 @@ export interface VerdictDoc {
   evidence: EvidenceItem[];
   verdict: VerdictResult;
   opinion: string;
+  /** v3 控辩双方意见 */
+  prosecution?: { argument: string; charges: { evidenceId: string; charge: string }[] } | null;
+  defense?: { attacks: { evidenceId: string; angle: string; reason: string }[]; overall: string; whatWouldChange: string } | null;
   crossChecks: { evidenceId: string; risk: string; note: string }[];
   disclaimer: string;
   namingFootnote: string;
@@ -1032,6 +1064,7 @@ export function buildVerdictDoc(
   v: VerdictResult,
   opinion: string,
   crossChecks: { evidenceId: string; risk: string; note: string }[],
+  trial?: { brief?: import('../court/agents/prosecutor').ProsecutionBrief | null; rebuttal?: import('../court/agents/defender').DefenseRebuttal | null },
 ): VerdictDoc {
   const limits: string[] = [];
   if (cf.target.degraded) limits.push('目标内容取证降级：' + (cf.target.degradeReason || '部分取证'));
@@ -1071,6 +1104,12 @@ export function buildVerdictDoc(
     evidence: evidenceN,
     verdict: v,
     opinion: cjkPunctNormalize(opinion),
+    prosecution: trial?.brief
+      ? { argument: trial.brief.argument, charges: trial.brief.charges }
+      : null,
+    defense: trial?.rebuttal
+      ? { attacks: trial.rebuttal.attacks, overall: trial.rebuttal.overall, whatWouldChange: trial.rebuttal.whatWouldChange }
+      : null,
     crossChecks,
     disclaimer: DISCLAIMER,
     namingFootnote: NAMING_FOOTNOTE,

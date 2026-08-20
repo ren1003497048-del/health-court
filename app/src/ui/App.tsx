@@ -22,6 +22,10 @@ export interface RunningState {
   objectionPlaying: boolean;
 }
 
+/** v3 角色中文名 */
+const roleZh = (r: string) =>
+  ({ clerk: '书记员', evidence_officer: '证据官', prosecutor: '公诉人', defender: '辩护人', judge: '法官', court_clerk: '法官助理', orchestrator: '审判长' } as Record<string, string>)[r] || r;
+
 /** v2.2.1 代号白话化：把后端标识（FP6/rare_case/SRC1）翻译成用户可读语言 */
 const plainFpType = (ty?: string) =>
   ({ weird_term: '异常用词', rare_case: '冷门案例', data_combo: '数据组合', analogy: '独特类比', joke: '专属玩笑', ordering: '罕见排序', other: '其他特征' } as Record<string, string>)[ty || ''] || ty || '';
@@ -707,6 +711,25 @@ function VerdictView(props: {
           </>
         )}
 
+        {(doc as any).prosecution && (
+          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div style={{ padding: 10, border: '1px solid rgba(107,143,113,.4)', borderRadius: 6, background: 'rgba(107,143,113,.06)' }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>公诉人立论</div>
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>{(doc as any).prosecution.argument}</div>
+              {(doc as any).prosecution.charges?.slice(0, 3).map((c: any, i: number) => (
+                <div key={i} className="hint" style={{ marginTop: 4 }}>· {c.charge}</div>
+              ))}
+            </div>
+            <div style={{ padding: 10, border: '1px solid rgba(176,122,30,.4)', borderRadius: 6, background: 'rgba(176,122,30,.06)' }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>辩护人驳斥</div>
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>{(doc as any).defense?.overall || '（无）'}</div>
+              {(doc as any).defense?.attacks?.slice(0, 3).map((a: any, i: number) => (
+                <div key={i} className="hint" style={{ marginTop: 4 }}>· {a.reason}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>法官意见</h3>
         <p style={{ margin: 0, lineHeight: 1.9 }}>{doc.opinion}</p>
 
@@ -716,6 +739,17 @@ function VerdictView(props: {
             <li key={i}>{l}</li>
           ))}
         </ul>
+
+        {doc.caseFile.trialLog && doc.caseFile.trialLog.length > 0 && (
+          <details style={{ marginTop: 14 }}>
+            <summary style={{ cursor: 'pointer', fontFamily: 'var(--serif)', fontWeight: 700 }}>庭审记录（{doc.caseFile.trialLog.length} 条）——各角色动作留痕</summary>
+            <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.9, opacity: 0.85, maxHeight: 300, overflowY: 'auto' }}>
+              {doc.caseFile.trialLog.map((l: any, i: number) => (
+                <div key={i}>[{String(l.at).replace('T', ' ').slice(11, 19)}] {roleZh(l.role)}：{l.action}{l.detail ? `——${l.detail}` : ''}</div>
+              ))}
+            </div>
+          </details>
+        )}
 
         <div className="input-row" style={{ marginTop: 18 }}>
           <button className="btn" onClick={onExportHtml} disabled={exporting}>
