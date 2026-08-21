@@ -62,3 +62,64 @@ describe('v3 公诉人/辩护人（上下文隔离）', () => {
     expect(seenUser).not.toContain('fullText'); // 全文不进公诉人上下文
   });
 });
+
+
+describe('v3.3 引用合规核查（阿伦特译序案机制）', () => {
+  it('extractCitations：确定性脚注解析（无 LLM 也工作）', async () => {
+    const { extractCitations } = await import('../src/pipeline/index');
+    const cf = {
+      target: { text: '正文第一段。阿伦特的诗歌观。\n伊丽莎白·扬—布鲁尔：《爱这个世界：汉娜·阿伦特传》，陈伟、张新刚译，上海人民出版社，2017年，第3页。\n正文继续。《黑暗时代的人们》，第372页。\n仲树\n2025年9月于波士顿' },
+    } as any;
+    // rt.provider.chat 抛错→只走确定性解析
+    const rt = { provider: { chat: async () => { throw new Error('no llm'); } }, log: () => {}, sources: [] } as any;
+    const cits = await extractCitations(cf, rt);
+    expect(cits.length).toBeGreaterThanOrEqual(2);
+    expect(cits[0].granularity).toBe('specific');
+    expect(cits[0].source).toContain('爱这个世界');
+    expect(cits.some((c) => c.source.includes('黑暗时代的人们'))).toBe(true);
+  });
+
+  it('三分类：具体标注→降级注记；泛化承认→保留线索', async () => {
+    // 复刻 crossExamination 内的三分类逻辑（纯代码段，行为等价验证）
+    const evidence = [
+      { id: 'EV-1', level: 'E3', sourceId: 'SRC1', description: '对应A', detail: {} as any },
+      { id: 'EV-2', level: 'E3', sourceId: 'SRC2', description: '对应B', detail: {} as any },
+      { id: 'EV-3', level: 'E3', sourceId: 'SRC3', description: '对应C', detail: {} as any },
+    ];
+    const cits = [
+      { id: 'CIT1', source: '《黑暗时代的人们》', granularity: 'specific', quote: '...' },
+      { id: 'CIT2', source: '希尔导言', granularity: 'general', quote: '均为译者提供了参考' },
+    ];
+    const sources = [
+      { id: 'SRC1', title: '黑暗时代的人们 Men in Dark Times', url: '' },
+      { id: 'SRC2', title: '希尔（Hill）导言 What Remains', url: '' },
+      { id: 'SRC3', title: '无关来源', url: '' },
+    ];
+    for (const ev of evidence) {
+      const srcDoc = sources.find((x) => x.id === ev.sourceId);
+      const srcTitle = (srcDoc?.title || '').slice(0, 30);
+      const matched = cits.find((c) => {
+        const cjkSegs = (s: string) => (s.match(/[\u4e00-\u9fff]{2,}/g) || []);
+        const latSegs = (s: string) => (s.match(/[A-Za-z]{4,}/g) || []);
+        const charsOf = (s: string) => new Set((s.match(/[\u4e00-\u9fff]/g) || []));
+        const cs = c.source, et = srcTitle;
+        if (cjkSegs(cs).some((seg) => seg.length >= 2 && et.includes(seg))) return true;
+        if (latSegs(cs).some((seg) => et.toLowerCase().includes(seg.toLowerCase()))) return true;
+        const a = charsOf(cs), b = charsOf(et);
+        if (a.size >= 2) {
+          const inter = [...a].filter((ch) => b.has(ch)).length;
+          if (inter >= 2 && inter >= Math.ceil(a.size * 0.85)) return true;
+        }
+        return false;
+      });      if (matched) {
+        if (matched.granularity === 'specific') { ev.detail.citationState = 'declared_specific'; ev.detail.demoted = true; }
+        else { ev.detail.citationState = 'declared_general'; }
+      } else { ev.detail.citationState = 'undeclared'; }
+    }
+    expect(evidence[0].detail.citationState).toBe('declared_specific');
+    expect(evidence[0].detail.demoted).toBe(true);
+    expect(evidence[1].detail.citationState).toBe('declared_general');
+    expect(evidence[1].detail.demoted).toBeUndefined();
+    expect(evidence[2].detail.citationState).toBe('undeclared');
+  });
+});

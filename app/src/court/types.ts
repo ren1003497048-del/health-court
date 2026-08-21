@@ -11,7 +11,21 @@ export interface CommunityLead {
   searchKeywordsEn: string[];
 }
 
+export interface DeclaredCitation {
+  id: string;
+  /** 被声明的来源描述（如「《黑暗时代的人们》，第372页」） */
+  source: string;
+  /** 声明位置（页/段/文末） */
+  location: string;
+  /** 粒度：specific=论点处具体标注；general=文末泛化承认 */
+  granularity: 'specific' | 'general';
+  /** 声明原句 */
+  quote: string;
+}
+
 export interface CaseFile {
+  /** v3.3 引用声明结构（书记员立案提取——盲提取原则：指纹官不读此字段） */
+  declaredCitations?: DeclaredCitation[];
   /** v3 多智能体庭审记录（判决书附录：每个角色的动作留痕） */
   trialLog?: { at: string; role: string; action: string; detail?: string }[];
   caseId: string;

@@ -1,7 +1,7 @@
 // 流水线编排：开庭五阶段（PRD §5）
 // 每个阶段是纯函数：输入案卷/来源，输出更新后的案卷/证据。UI 与无头测试共用同一条路径。
 
-import type { CaseFile, SourceDoc, FingerprintCandidate, CommunityLead } from '../court/types';
+import type { CaseFile, SourceDoc, FingerprintCandidate, CommunityLead, DeclaredCitation } from '../court/types';
 import type { EvidenceItem } from '../court/evidence';
 import { chatJson } from '../providers/types';
 import type { ProviderAdapter, Fetcher } from '../providers/types';
@@ -167,8 +167,52 @@ export interface InvestigateOptions {
   seedFingerprints?: { targetQuote: string; type?: FingerprintCandidate['type']; note?: string; searchKeywordsEn?: string[] }[];
 }
 
+// v3.3 引用结构提取（书记员职责·立案登记）：确定性脚注解析 + LLM 粒度分类。
+// 盲提取原则的另一半：此结果只进 declaredCitations，指纹提取提示词不读它。
+export async function extractCitations(cf: CaseFile, rt: CourtRuntime): Promise<DeclaredCitation[]> {
+  const text = cf.target.text;
+  if (!text || text.length < 60) return []; // 短文本也可能有脚注（v3.3 测试发现 200 过严）
+  const out: DeclaredCitation[] = [];
+  let n = 0;
+  // ① 确定性解析：脚注形态（页脚引用行）——「《书名》，第N页」「同上」「译者注」「参见」
+  const fnoteRe = /[《«][^》»]{2,30}[》»][，,]?\s*(?:第\s*[\d–-]+\s*页)?/g;
+  const lines = text.split('\n');
+  for (let li = 0; li < lines.length; li++) {
+    const l = lines[li].trim();
+    if (l.length < 8 || l.length > 160) continue;
+    // 脚注行特征：短行 + 引用词
+    if (!/(?:第[\d–-]+页|同上|译者注|参见|译自|改编自|转引自)/.test(l)) continue;
+    const m = l.match(fnoteRe);
+    if (m) {
+      out.push({ id: `CIT${++n}`, source: m[0].slice(0, 60), location: `行${li + 1}`, granularity: 'specific', quote: l.slice(0, 120) });
+    }
+  }
+  // ② 文末泛化承认句：LLM 识别（一次调用，容错跳过）
+  try {
+    const r = await chatJson<any>(
+      rt.provider.chat,
+      'Find ACKNOWLEDGMENT-of-reference sentences in the text: sentences that admit consulting/borrowing from other works but WITHOUT specific per-claim footnotes (e.g. 「……均为译者提供了参考」「本文参考了……」「受……启发」). Return each as {"source":"被承认的来源","quote":"整句","location":"大致位置"}. Only sentences that acknowledge EXTERNAL works/persons as sources of ideas or text. Output only JSON: {"general":[{"source":"","quote":"","location":""}]}',
+      text.slice(-6000),
+      { maxTokens: 600 },
+    );
+    for (const g of (r.general || []).slice(0, 6)) {
+      if (!g?.quote || !g?.source) continue;
+      out.push({ id: `CIT${++n}`, source: String(g.source).slice(0, 60), location: String(g.location || '文末').slice(0, 30), granularity: 'general', quote: String(g.quote).slice(0, 160) });
+    }
+  } catch { /* LLM 失败只保留确定性解析结果 */ }
+  rt.log('立案', `引用结构提取：${out.filter((c) => c.granularity === 'specific').length} 条具体标注 + ${out.filter((c) => c.granularity === 'general').length} 条泛化承认`);
+  return out;
+}
+
 export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: InvestigateOptions): Promise<CaseFile> {
   const text = truncateSmart(cf.target.text, 14000);
+
+  // v3.3 书记员·引用结构登记（立案材料的一部分；指纹官不读此字段——盲提取）
+  try {
+    cf.declaredCitations = await extractCitations(cf, rt);
+  } catch {
+    cf.declaredCitations = [];
+  }
 
   rt.log('侦查', '书记员整理案情画像…');
   const profile = await chatJson<any>(rt.provider.chat, PROFILE_SYSTEM, `目标文本：\n${text}`);
@@ -918,6 +962,50 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     } catch { /* 转述失败保留原引文呈现 */ }
   }
 
+  // v3.3 证据官·引用状态三分类（明质证阶段——此时才读 declaredCitations）：
+  // ①未声明→正常证据 ②具体标注（引文对应处有声明）→转注记不计抄袭证据
+  // ③泛化承认未具体标注→保留证据但降格「引用不规范」线索
+  {
+    const cits = cf.declaredCitations || [];
+    if (cits.length) {
+      for (const ev of evidence) {
+        if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+        const srcDoc = rt.sources.find((x) => x.id === ev.sourceId);
+        const srcTitle = (srcDoc?.title || '').slice(0, 30);
+        // 匹配：声明来源与证据源标题/URL 的词面交集（中文书名或英文名匹配）
+                const matched = cits.find((c) => {
+          // v3.3.2 匹配：①CJK连续段命中 ②CJK字符集重叠≥85%（≥2字） ③拉丁词≥4字母命中
+          const cjkSegs = (s: string) => (s.match(/[\u4e00-\u9fff]{2,}/g) || []);
+          const latSegs = (s: string) => (s.match(/[A-Za-z]{4,}/g) || []);
+          const charsOf = (s: string) => new Set((s.match(/[\u4e00-\u9fff]/g) || []));
+          const cs = c.source, et = `${srcTitle} ${ev.sourceUrl || ''}`;
+          if (cjkSegs(cs).some((seg) => seg.length >= 2 && et.includes(seg))) return true;
+          if (latSegs(cs).some((seg) => et.toLowerCase().includes(seg.toLowerCase()))) return true;
+          const a = charsOf(cs), b = charsOf(et);
+          if (a.size >= 2) {
+            const inter = [...a].filter((ch) => b.has(ch)).length;
+            if (inter >= 2 && inter >= Math.ceil(a.size * 0.85)) return true;
+          }
+          return false;
+        });        if (matched) {
+          if (matched.granularity === 'specific') {
+            (ev.detail as any) = { ...(ev.detail || {}), citationState: 'declared_specific', citationRef: matched.id };
+            ev.description = `${ev.description}（该对应处已有具体引用标注 ${matched.source}——不计入抄袭证据）`;
+            (ev.detail as any).demoted = true;
+          } else {
+            (ev.detail as any) = { ...(ev.detail || {}), citationState: 'declared_general', citationRef: matched.id };
+            ev.description = `${ev.description}（文末泛化承认过参考该来源，但此对应处无具体标注——保留为「引用不规范」线索）`;
+          }
+        } else {
+          (ev.detail as any) = { ...(ev.detail || {}), citationState: 'undeclared' };
+        }
+      }
+      const spec = evidence.filter((e) => (e.detail as any)?.citationState === 'declared_specific').length;
+      const gen = evidence.filter((e) => (e.detail as any)?.citationState === 'declared_general').length;
+      if (spec + gen) rt.log('对质', `引用状态标注：${spec} 条已具体声明（转注记），${gen} 条仅泛化承认（降格线索）`);
+    }
+  }
+
   // v3.2 上下文披露（用户要求：证据区披露被检内容附近的文本，经核查确保完整准确）：
   // 每条 E3/E4 证据存 contextTarget/contextSource——引文前后各~200字，命中句内嵌；
   // 披露内容机械校验：必须是目标文本/源全文的逐字子串（locateQuote 定位失败则不披露）
@@ -1118,7 +1206,7 @@ export async function verdictStage(
     rt.log('宣判', '公诉人立论…');
     brief = await runProsecutor(orch, chatFn, evidence, rt.sources, cf.target.title);
     rt.log('宣判', '辩护人驳斥…');
-    rebuttal = await runDefender(orch, chatFn, evidence, brief!, cf.target.title);
+    rebuttal = await runDefender(orch, chatFn, evidence, brief!, cf.target.title, cf.declaredCitations);
   } else {
     orch.note('orchestrator', '无正面证据——控辩双方不出庭，直接宣判');
   }
@@ -1126,7 +1214,7 @@ export async function verdictStage(
 
   // 法官判词
   let opinion = '';
-  const judgeOp = await runJudge(orch, chatFn, v.word, v.rule, evidence, brief, rebuttal, cf.target.title);
+  const judgeOp = await runJudge(orch, chatFn, v.word, v.rule, evidence, brief, rebuttal, cf.target.title, cf.declaredCitations);
   if (judgeOp?.opinion) {
     opinion = judgeOp.opinion;
     cf.trialLog = [...orch.session.agentLog];

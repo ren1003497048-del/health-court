@@ -22,6 +22,7 @@ export async function runDefender(
   evidence: EvidenceItem[],
   brief: ProsecutionBrief,
   targetTitle: string,
+  declaredCitations?: { id: string; source: string; granularity: string; quote: string }[],
 ): Promise<DefenseRebuttal | null> {
   const ctx = agentContext('defender', orch, chat);
   const positive = evidence.filter((e) => e.level === 'E2' || e.level === 'E3' || e.level === 'E4');
@@ -38,12 +39,16 @@ export async function runDefender(
       )
       .join('\n\n'),
     prosecutionBrief: brief.argument + '\n' + brief.charges.map((c) => `- ${c.evidenceId}: ${c.charge}`).join('\n'),
+    citationMap:
+      (declaredCitations || []).length
+        ? declaredCitations!.map((c) => `${c.granularity === 'specific' ? '【具体标注】' : '【泛化承认】'}${c.source}：${c.quote.slice(0, 60)}`).join('\n')
+        : '（文本内未提取到引用声明）',
   };
 
   return isolated(ctx, '辩方驳斥', materials, async (c) => {
     const r = await c(
       'You are the DEFENSE attorney in a plagiarism-review court. The prosecutor has built a case. Attack EVERY key evidence item from these angles (pick the strongest per item): coincidence probability (could independent creation produce this?), public-domain material (textbook facts / common tropes anyone could use), method blind spots (search not exhaustive / transcription noise / excerpt out of context), attribution (maybe the target credited the source?). Then write an overall rebuttal (<=200 chars, plain Chinese) and state what additional evidence would change your assessment. Be honest: if some evidence is genuinely strong, concede it rather than making weak objections. Output only JSON: {"attacks":[{"evidenceId":"EV-...","angle":"coincidence|public_domain|method_blindspot|attribution|concede","reason":"一句话中文"}],"overall":"...","whatWouldChange":"..."}',
-      `目标：《${targetTitle}》\n\n控方立论：\n${materials.prosecutionBrief}\n\n证据清单：\n${materials.evidenceList}`,
+      `目标：《${targetTitle}》\n\n控方立论：\n${materials.prosecutionBrief}\n\n证据清单：\n${materials.evidenceList}\n\n文本内已提取的引用声明地图（用此核对每条证据：若证据对应处有【具体标注】则引用抗辩成立；若只有【泛化承认】而无对应处标注，抗辩是「引用不规范」而非洗稿）：\n${materials.citationMap}`,
       { maxTokens: 1500 },
     );
     return {

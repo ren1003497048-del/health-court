@@ -23,6 +23,7 @@ export async function runJudge(
   brief: ProsecutionBrief | null,
   rebuttal: DefenseRebuttal | null,
   targetTitle: string,
+  cf_citations?: { id: string; source: string; granularity: string; quote: string }[],
 ): Promise<JudgeOpinion | null> {
   const ctx = agentContext('judge', orch, chat);
   const materials = {
@@ -32,13 +33,16 @@ export async function runJudge(
     evidenceTop: evidence
       .filter((e) => e.level !== 'E1')
       .slice(0, 5)
-      .map((e) => `${e.plainTitle || e.kind}：${e.description.slice(0, 80)}`)
+      .map((e) => `${e.plainTitle || e.kind}：${e.description.slice(0, 80)}${(e.detail as any)?.citationState === 'declared_specific' ? '［引用状态：已具体标注］' : (e.detail as any)?.citationState === 'declared_general' ? '［引用状态：仅泛化承认］' : ''}`)
       .join('\n'),
+    citationNote: (cf_citations || []).length
+      ? `已提取 ${(cf_citations || []).filter((c: any) => c.granularity === 'specific').length} 条具体标注与 ${(cf_citations || []).filter((c: any) => c.granularity === 'general').length} 条泛化承认。`
+      : '文本内未提取到引用声明。',
   };
   return isolated(ctx, '法官判词', materials, async (c) => {
     const r = await c(
-      `You are the JUDGE writing the closing opinion (法官意见) for a plagiarism-review court. You see: the verdict (determined by fixed rules), the prosecutor's case, the defender's rebuttal, and the evidence summary. Write 120-250 chars in simplified Chinese: 1) acknowledge the strongest point from EACH side honestly; 2) explain what the verdict rests on; 3) state the limits (search coverage, unverified items). No jargon (E3/E4 banned), no internal codes. End naturally with 请依据材料自行判断. Also output extendDebate=true ONLY if the defender identified a concrete, checkable gap that a second round could actually resolve (not a general complaint). Output only JSON: {"opinion":"...","extendDebate":false}`,
-      `目标：《${targetTitle}》\n裁决：${materials.verdict}\n\n控方立论：${materials.prosecution}\n\n辩方驳斥：${materials.defense}\n\n证据概要：\n${materials.evidenceTop}`,
+      `You are the JUDGE writing the closing opinion (法官意见) for a plagiarism-review court. You see: the verdict (determined by fixed rules), the prosecutor's case, the defender's rebuttal, and the evidence summary. Write 120-250 chars in simplified Chinese: 1) acknowledge the strongest point from EACH side honestly; 2) explain what the verdict rests on; 3) state the limits (search coverage, unverified items). If evidence citation-states exist, distinguish honestly: 已具体标注的对应（属引用）与仅泛化承认的对应（属引用不规范线索）与未声明对应（正常证据）——三者对结论的支持力不同，判词须分开表述。No jargon (E3/E4 banned), no internal codes. End naturally with 请依据材料自行判断. Also output extendDebate=true ONLY if the defender identified a concrete, checkable gap that a second round could actually resolve (not a general complaint). Output only JSON: {"opinion":"...","extendDebate":false}`,
+      `目标：《${targetTitle}》\n裁决：${materials.verdict}\n\n控方立论：${materials.prosecution}\n\n辩方驳斥：${materials.defense}\n\n证据概要：\n${materials.evidenceTop}\n\n引用声明情况：${materials.citationNote}`,
       { maxTokens: 800 },
     );
     return { opinion: String(r.opinion || ''), extendDebate: !!r.extendDebate } as JudgeOpinion;
