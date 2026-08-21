@@ -22,6 +22,21 @@ export interface RunningState {
   objectionPlaying: boolean;
 }
 
+/** v3.1 引文高亮：在扩展引文中对命中短语标红 */
+const HighlightQuote = ({ text, phrase }: { text: string; phrase?: string }) => {
+  if (!phrase || phrase.length < 6 || !text.includes(phrase)) {
+    return <>{text}</>;
+  }
+  const i = text.indexOf(phrase);
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark style={{ background: 'rgba(176,122,30,0.28)', color: 'inherit', padding: '0 1px', borderRadius: 2 }}>{phrase}</mark>
+      {text.slice(i + phrase.length)}
+    </>
+  );
+};
+
 /** v3 角色中文名 */
 const roleZh = (r: string) =>
   ({ clerk: '书记员', evidence_officer: '证据官', prosecutor: '公诉人', defender: '辩护人', judge: '法官', court_clerk: '法官助理', orchestrator: '审判长' } as Record<string, string>)[r] || r;
@@ -619,10 +634,34 @@ function VerdictView(props: {
           const negative = doc.evidence.filter((e: any) => e.level === 'E1');
           return (
             <>
-              <h3 id="evidence-list" style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{positive.length}）</h3>
+              {(doc as any).overview && (
+          <div style={{ margin: '14px 0', padding: '10px 14px', background: 'rgba(107,143,113,0.07)', borderLeft: '3px solid var(--green, #6B8F71)', borderRadius: 4, fontSize: 14, lineHeight: 1.9 }}>
+            <span style={{ fontWeight: 700 }}>总体对应形态｜</span>{(doc as any).overview}
+          </div>
+        )}
+        <h3 id="evidence-list" style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{positive.length}）</h3>
               {positive.length === 0 && <p className="hint">本案无命中证据——但这不是终点，见下方「已查证清单」。</p>}
-              {positive.map((e) => (
-          <div className="evidence-card" key={e.id} id={`ev-${e.id}`}>
+              {(() => {
+                const bySource = new Map<string, any[]>();
+                for (const e of positive) {
+                  const key = e.sourceId || '未知源';
+                  if (!bySource.has(key)) bySource.set(key, []);
+                  bySource.get(key)!.push(e);
+                }
+                const srcInfo = (sid: string) => doc.sources.find((s) => s.id === sid);
+                return [...bySource.entries()].map(([sid, evs]) => {
+                  const s = srcInfo(sid);
+                  return (
+                    <div key={`grp-${sid}`} style={{ marginBottom: 18 }}>
+                      {s && (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8, paddingBottom: 6, borderBottom: '2px solid var(--line, #e0d8cc)', flexWrap: 'wrap' }}>
+                          <span style={{ fontFamily: 'var(--serif)', fontWeight: 800, fontSize: 14.5 }}>参照源：{s.title.slice(0, 46)}</span>
+                          <a href={s.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, textDecoration: 'underline' }}>直达 ↗</a>
+                          <span className="hint">相似度 {s.similarity ?? '?'} · {evs.length} 处对应{s.transcribed ? ' · 已转录全文比对' : ''}</span>
+                        </div>
+                      )}
+                      {evs.map((e) => (
+          <div className="evidence-card" key={e.id} id={`ev-${e.id}`} style={{ marginBottom: 10 }}>
             <div className="evidence-head">
               <span className={'evidence-level ' + e.level}>{e.plainTitle || plainLevelName(e.level)}</span>
               <span className="evidence-id">{e.level === 'E4' ? '错误被复制' : e.level === 'E3' ? '具体对应' : e.level === 'E2' ? '结构对应' : '查证记录'}</span>
@@ -652,21 +691,29 @@ function VerdictView(props: {
                 对比源：<a href={e.sourceUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>{e.sourceTitle}</a>
                 {e.sourceUrl ? ' ↗' : ''}
                 {e.sourceTranscribed ? '（已转录全文比对）' : '（页面文本比对）'}
+                {(e.detail as any)?.seriesPage ? '（系列页，非单集直达）' : ''}
+              </div>
+            )}
+            {Array.isArray((e.detail as any)?.alsoSources) && (e.detail as any).alsoSources.length > 1 && (
+              <div className="hint" style={{ marginTop: 4 }}>
+                同一对应还见于：{(e.detail as any).alsoSources.filter((s: any) => s.sourceId !== e.sourceId).map((s: any, i: number) => (
+                  <span key={i}>{i > 0 ? '；' : ''}{s.sourceId?.replace('SRC', '源')}《{(s.sourceTitle || '').slice(0, 24)}》{s.examVerdict === 'expression_copy' ? '' : '（线索级）'}</span>
+                ))}
               </div>
             )}
             {(e.targetQuote || e.sourceQuote) && (
               <div className="palette" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
                 {e.targetQuote && (
                   <div className="quote-box target" style={{ margin: 0 }}>
-                    <span className="quote-label">目标（被检内容）</span>
-                    <div className="palette-text">{e.targetQuote}</div>
+                    <span className="quote-label">被检内容</span>
+                    <div className="palette-text"><HighlightQuote text={e.targetQuote} phrase={(e.detail as any)?.hitPhraseTarget} /></div>
                     {e.targetQuoteLocated === false && <span className="unlocated">未定位</span>}
                   </div>
                 )}
                 {e.sourceQuote && (
                   <div className="quote-box source" style={{ margin: 0 }}>
-                    <span className="quote-label">源（{e.sourceTitle ? e.sourceTitle.slice(0, 24) : '候选源'}）</span>
-                    <div className="palette-text">{e.sourceQuote}</div>
+                    <span className="quote-label">参照源文·{e.sourceTitle ? e.sourceTitle.slice(0, 20) : '候选'}</span>
+                    <div className="palette-text"><HighlightQuote text={e.sourceQuote} phrase={(e.detail as any)?.hitPhraseSource} /></div>
                     {e.sourceQuoteLocated === false && <span className="unlocated">未定位</span>}
                   </div>
                 )}
@@ -681,7 +728,11 @@ function VerdictView(props: {
               ) : null;
             })()}
           </div>
-              ))}
+                      ))}
+                    </div>
+                  );
+                });
+              })()}
               {negative.length > 0 && (
                 <>
                   <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>已查证清单（{negative.length}）——查过但未发现对应</h3>

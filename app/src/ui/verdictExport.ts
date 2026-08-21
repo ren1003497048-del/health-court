@@ -39,8 +39,8 @@ export function buildVerdictHtml(doc: VerdictDoc | any): string {
         ${e.detail?.macro && Array.isArray(e.detail.mappings) && e.detail.mappings.length ? `<div class="cc" style="padding-left:10px;border-left:2px solid #ccc"><b>大纲逐项对应（${e.detail.mappings.length} 项）：</b>${e.detail.mappings.map((m: any) => `<div>· 第${m.item ?? ''}项：${esc(m.note || '')}${m.sourceExcerpt ? `——源摘录：${esc(String(m.sourceExcerpt).slice(0, 100))}…` : ''}</div>`).join('')}</div>` : ''}
         ${e.sourceTitle ? `<div class="cc">对比源：<a href="${esc(e.sourceUrl || '#')}">${esc(e.sourceTitle)}</a>${e.sourceTranscribed ? '（已转录全文比对）' : '（页面文本比对）'}</div>` : ''}
         ${(e.targetQuote || e.sourceQuote) ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        ${e.targetQuote ? `<div class="q" style="margin:0"><span class="ql">目标（被检内容）</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
-        ${e.sourceQuote ? `<div class="q" style="margin:0"><span class="ql">源（${esc((e.sourceTitle || '候选源').slice(0, 24))}）</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
+        ${e.targetQuote ? `<div class="q" style="margin:0"><span class="ql">被检内容</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
+        ${e.sourceQuote ? `<div class="q" style="margin:0"><span class="ql">参照源文·${esc((e.sourceTitle || '候选').slice(0, 20))}</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
         </div>` : ''}
         ${(() => {
           const cc = (doc.crossChecks || []).find((c: any) => c.evidenceId === e.id);

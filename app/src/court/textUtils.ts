@@ -10,6 +10,13 @@ const PUNCT = /[，。、；：？！“”‘’「」『』（）()《》〈�
  * 判定“中文语境”：该标点的前后任一字符为 CJK。英文引文整段不动的场景由前后字符决定，天然跳过。
  */
 export function cjkPunctNormalize(text: string): string {
+  // v3.1 英文段落保护：整段几乎纯英文（拉丁字母占比>70%）时不做任何转换——
+  // 英文引文必须保留英文标点（8E9GJP 案：英文源引文被强转中文标点）
+  const letters = (text.match(/[A-Za-z]/g) || []).length;
+  const cjkChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  if (text.trim().length > 0 && letters / Math.max(1, letters + cjkChars) > 0.7 && cjkChars < 4) {
+    return text;
+  }
   const isCJK = (ch: string | undefined) => !!ch && /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch);
   let out = '';
   for (let i = 0; i < text.length; i++) {

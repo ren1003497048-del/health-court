@@ -918,13 +918,103 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     } catch { /* 转述失败保留原引文呈现 */ }
   }
 
+  // v3.1 引文上下文扩展（8E9GJP 案用户要求：截取需相对完整）：
+  // 指纹句前后各扩一句（句读边界），让读者看到语境；源引文同样扩一句
+  {
+    const expand = (q: string, text: string): string => {
+      if (!q || !text) return q;
+      const i = text.indexOf(q.slice(0, 12));
+      if (i < 0) return q;
+      // 前扩：从 i 往前找句末标点（。！？.!?），最多 120 字
+      let start = i;
+      for (let j = i - 1; j >= Math.max(0, i - 120) && j >= 0; j--) {
+        if (/[。！？!?]/.test(text[j]) || (text[j] === '.' && /\s/.test(text[j + 1] || ''))) { start = j + 1; break; }
+      }
+      // 后扩：从引文尾往后找句末，最多 160 字
+      const end0 = i + q.length;
+      let end = end0;
+      for (let j = end0; j < Math.min(text.length, end0 + 160); j++) {
+        if (/[。！？!?]/.test(text[j]) || (text[j] === '.' && /\s/.test(text[j + 1] || ''))) { end = j + 1; break; }
+      }
+      const ext = text.slice(start, end).trim();
+      return ext.length >= q.length ? ext : q;
+    };
+    for (const ev of evidence) {
+      if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+      const src = rt.sources.find((x) => x.id === ev.sourceId);
+      (ev.detail as any) = { ...(ev.detail || {}), hitPhraseTarget: ev.targetQuote, hitPhraseSource: ev.sourceQuote };
+      if (ev.targetQuote) ev.targetQuote = expand(ev.targetQuote, cf.target.text);
+      if (ev.sourceQuote && src?.fullText) ev.sourceQuote = expand(ev.sourceQuote, src.fullText);
+    }
+    rt.log('对质', '引文上下文扩展：指纹句已扩为完整句段（含前后语境）');
+  }
+
+  // v3.1（8E9GJP 案）：证据跨源聚合——同一目标引文被多源命中时合并为一条，
+  // 独立源列表内嵌（不再重复 N 条卡片）。聚合键：目标引文归一化后互相包含。
+  {
+    const { normalize } = await import('../court/textUtils');
+    const groups: typeof evidence = [];
+    for (const ev of evidence) {
+      if (ev.level !== 'E3' && ev.level !== 'E4') { groups.push(ev); continue; }
+      const nq = normalize(ev.targetQuote || '');
+      const g = groups.find((x) => {
+        if (x.level !== 'E3' && x.level !== 'E4') return false;
+        const nx = normalize(x.targetQuote || '');
+        return (nx && nq && (nx.includes(nq) || nq.includes(nx)));
+      });
+      if (g) {
+        // 并入：记多源 + 保留最强检定
+        const d = (g.detail || {}) as any;
+        const alsoSources = d.alsoSources || [{ sourceId: g.sourceId, sourceTitle: g.sourceTitle, sourceUrl: g.sourceUrl, sourceQuote: g.sourceQuote, examVerdict: g.examVerdict }];
+        if (!alsoSources.some((s: any) => s.sourceId === ev.sourceId)) {
+          alsoSources.push({ sourceId: ev.sourceId, sourceTitle: ev.sourceTitle, sourceUrl: ev.sourceUrl, sourceQuote: ev.sourceQuote, examVerdict: ev.examVerdict });
+        }
+        g.detail = { ...d, alsoSources };
+        const evStrong = ev.examVerdict === 'expression_copy';
+        const gWeak = g.examVerdict !== 'expression_copy';
+        if (evStrong && gWeak) {
+          g.examVerdict = ev.examVerdict; g.examNote = ev.examNote;
+          g.sourceQuote = ev.sourceQuote; g.sourceId = ev.sourceId;
+          g.sourceTitle = ev.sourceTitle; g.sourceUrl = ev.sourceUrl;
+        }
+        if ((ev.detail as any)?.demoted && !(g.detail as any).demoted) { /* 保留 g */ }
+        else if (!(ev.detail as any)?.demoted && (g.detail as any).demoted) {
+          (g.detail as any).demoted = undefined;
+        }
+      } else {
+        groups.push(ev);
+      }
+    }
+    // 聚合条目描述带源数
+    for (const g of groups) {
+      const d = (g.detail || {}) as any;
+      if (d.alsoSources?.length > 1) {
+        g.description = `${g.description}（该对应在 ${d.alsoSources.length} 个独立源中同时命中）`;
+      }
+    }
+    if (evidence.length !== groups.length) {
+      rt.log('对质', `证据跨源聚合：${evidence.length} → ${groups.length} 条（同一引文多源命中已合并）`);
+      evidence.length = 0;
+      evidence.push(...groups);
+    }
+  }
+
   // v2.2.10 证据卡源主体信息统一注入（可点击核验）
+  // v3.1：Apple 链接补 uo=4（保证浏览器打开网页版单集页而非跳 App 主页）；
+  // 系列页/节目主页 URL 标注「系列页」提示非单集直达
   for (const ev of evidence) {
     const s = rt.sources.find((x) => x.id === ev.sourceId);
     if (s) {
       ev.sourceTitle = s.title;
-      ev.sourceUrl = s.url;
+      let url = s.url || '';
+      if (/podcasts\.apple\.com/.test(url) && !url.includes('uo=')) {
+        url += (url.includes('?') ? '&' : '?') + 'uo=4';
+      }
+      ev.sourceUrl = url;
       ev.sourceTranscribed = !!s.transcribed;
+      if (/\/series\/|\/show\//.test(url)) {
+        (ev.detail as any) = { ...(ev.detail || {}), seriesPage: true };
+      }
     }
   }
 
@@ -964,6 +1054,18 @@ export async function verdictStage(
   const v = mapVerdictPublic(stats, cf.attribution, !cf.target.degraded, rt.sources.length > 0);
 
   rt.log('宣判', `裁决计算完成：${v.word}（${v.rule}）`);
+
+  // v3.1 总括判词（8E9GJP 案用户要求）：先给整体相似性/痕迹形态总述，再进具体清单
+  let overview = '';
+  try {
+    const ov = await chatJson<any>(
+      rt.provider.chat,
+      'Write ONE overview sentence (<=120 chars, plain Chinese, no jargon) summarizing the OVERALL relationship between the audited content and the sources: what kind of correspondence was found (same errors / same data combinations / structural similarity / only topic overlap / nothing), across how many independent sources, and how strong the trace pattern looks. This is the FIRST thing the reader sees before the evidence list - it must be a fair summary of the evidence, not a verdict. Output only JSON: {"overview":"..."}',
+      `证据概览：\n${evidence.filter((e) => e.level !== 'E1').slice(0, 10).map((e) => `[${e.level}] ${e.plainTitle || e.kind}｜${e.description.slice(0, 80)}`).join('\n')}\n\n候选源：${rt.sources.map((s) => `${s.id} ${s.title.slice(0, 30)}（相似度${s.similarity ?? '?'}）`).join('；')}`,
+      { maxTokens: 300 },
+    );
+    overview = cjkPunctNormalize(String(ov.overview || ''));
+  } catch { /* 总括失败不阻塞 */ }
 
   // v3 多智能体庭审（P3）：公诉人立论 → 辩护人驳斥 → 法官判词
   // 上下文隔离：控辩双方只读结构化证据清单；判词输入=控辩对抗材料（天然平衡）
@@ -1027,7 +1129,7 @@ export async function verdictStage(
     }
   }
 
-  return buildVerdictDoc(cf, rt, evidence, v, opinion, crossChecks, { brief, rebuttal });
+  return buildVerdictDoc(cf, rt, evidence, v, opinion, crossChecks, { brief, rebuttal, overview });
 }
 
 // mapVerdict 的公开包装（避免内核层反向依赖流水线）
@@ -1046,6 +1148,8 @@ export interface VerdictDoc {
   sources: SourceDoc[];
   evidence: EvidenceItem[];
   verdict: VerdictResult;
+  /** v3.1 总括判词：整体相似性与痕迹形态总述（证据清单之前） */
+  overview?: string;
   opinion: string;
   /** v3 控辩双方意见 */
   prosecution?: { argument: string; charges: { evidenceId: string; charge: string }[] } | null;
@@ -1064,7 +1168,7 @@ export function buildVerdictDoc(
   v: VerdictResult,
   opinion: string,
   crossChecks: { evidenceId: string; risk: string; note: string }[],
-  trial?: { brief?: import('../court/agents/prosecutor').ProsecutionBrief | null; rebuttal?: import('../court/agents/defender').DefenseRebuttal | null },
+  trial?: { brief?: import('../court/agents/prosecutor').ProsecutionBrief | null; rebuttal?: import('../court/agents/defender').DefenseRebuttal | null; overview?: string },
 ): VerdictDoc {
   const limits: string[] = [];
   if (cf.target.degraded) limits.push('目标内容取证降级：' + (cf.target.degradeReason || '部分取证'));
@@ -1095,7 +1199,14 @@ export function buildVerdictDoc(
   if (topSim.length) limits.push(`相似度前三：${topSim.join('，')}`);
 
   // v2.2 出口标点纪律：中文区半角标点归一化为全角（确定性兜底，防 LLM 漏守约束）
-  const evidenceN = evidence.map((e) => ({ ...e, description: cjkPunctNormalize(e.description) }));
+  // v3.1：引文（targetQuote/sourceQuote/转述）不再统一归一化——
+  // 英文源引文必须保留英文标点；中文区标点纪律已在提示词层约束 + cjkPunctNormalize 内置英文段保护
+  const evidenceN = evidence.map((e) => ({
+    ...e,
+    description: cjkPunctNormalize(e.description),
+    sourceParaphrase: e.sourceParaphrase ? cjkPunctNormalize(e.sourceParaphrase) : undefined,
+    targetParaphrase: e.targetParaphrase ? cjkPunctNormalize(e.targetParaphrase) : undefined,
+  }));
   const limitsN = limits.map(cjkPunctNormalize);
 
   return {
@@ -1103,6 +1214,7 @@ export function buildVerdictDoc(
     sources: rt.sources,
     evidence: evidenceN,
     verdict: v,
+    overview: trial?.overview,
     opinion: cjkPunctNormalize(opinion),
     prosecution: trial?.brief
       ? { argument: trial.brief.argument, charges: trial.brief.charges }
