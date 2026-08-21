@@ -11,11 +11,18 @@ import {
 } from '../court/prompts';
 import { locateQuote, truncateSmart, parseJinaMarkdown, normalize } from '../court/textUtils';
 import { preReview, extractDate, MIN_TARGET_TEXT_CHARS } from '../court/preReview';
-import { stripPageChrome, chromeRatio } from '../court/chromeStrip';
+import { stripPageChrome, stripMarkdownMedia, chromeRatio } from '../court/chromeStrip';
 import { applyFingerprintDiscipline, isMirrorOrGenericSource } from '../court/fingerprintDiscipline';
 import { cjkPunctNormalize } from '../court/textUtils';
-import { plainLevelName } from '../court/evidence';
-import { SOURCE_QUALITY_GATE } from '../court/evidence';
+import {
+  plainLevelName,
+  SOURCE_QUALITY_GATE,
+  MIN_ADMISSIBLE_EVIDENCE_GROUPS,
+  countAdmissibleEvidenceGroups,
+  isAdmissibleEvidence,
+  isFormalControversyReport,
+  looksLikeSharedNewsFact,
+} from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
 export const MIN_TARGET_CHARS = MIN_TARGET_TEXT_CHARS; // 2026-08-20 用户拍板：文学节选/短篇从宽（原 500）
@@ -38,6 +45,10 @@ export interface CourtRuntime {
   mirrorNotes?: string[];
   /** v2.2 检索淘汰记录（透明可复核：标题+原因） */
   rejectedSources?: { title: string; reason: string }[];
+  /** UI 运行期五阶段日志，最终并入庭审记录。 */
+  processLog?: StageLog[];
+  /** 经主体与报道体例双重过滤的外界指控。 */
+  controversyNotes?: { title: string; url: string; snippet?: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +265,7 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
       type: (['weird_term', 'rare_case', 'data_combo', 'analogy', 'joke', 'ordering', 'other'].includes(f.type) ? f.type : 'other') as FingerprintCandidate['type'],
       priority: f.priority === 'E4_suspect' || f.priority === 'high' ? f.priority : 'normal',
       targetQuote: String(f.targetQuote || ''),
+      quote: String(f.targetQuote || ''),
       note: f.note ? String(f.note) : undefined,
       searchKeywordsZh: (f.searchKeywordsZh || []).map(String).slice(0, 4),
       searchKeywordsEn: (f.searchKeywordsEn || []).map(String).slice(0, 4),
@@ -279,6 +291,7 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
       type: s.type || 'weird_term',
       priority: 'E4_suspect' as const,
       targetQuote: s.targetQuote,
+      quote: s.targetQuote,
       note: (s.note || '社区已验证指纹') + '（种子指纹，来源：群众线报/判例）',
       searchKeywordsZh: [],
       searchKeywordsEn: s.searchKeywordsEn || [],
@@ -495,17 +508,18 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   rt.log('检索', `共获不重复候选 ${candidates.length} 个，进入过滤与评分…`);
 
   // —— v2.2.9 R6 争议报道单列（不参与对质——报道不是被抄对象，但作为外界指控呈堂）——
-  const controversyNotes: string[] = [];
+  const controversyNotes: { title: string; url: string; snippet?: string }[] = [];
   const controversyCandidates = candidates.filter((c) => c.via.startsWith('R6'));
   for (const c of controversyCandidates) {
-    const titleHit = /抄袭|洗稿|剽窃|抄袭风波|被指|争议/.test(c.doc.title || '') || /抄袭|洗稿|剽窃/.test(c.doc.snippet || '');
-    if (titleHit) {
-      controversyNotes.push(`${c.doc.title.slice(0, 60)}（${(c.doc.snippet || '').slice(0, 80)}…）${c.doc.url}`);
+    if (isFormalControversyReport(c.doc, { title: cf.target.title, author: cf.target.author })) {
+      controversyNotes.push({ title: c.doc.title.slice(0, 120), url: c.doc.url, snippet: (c.doc.snippet || '').slice(0, 220) });
+    } else {
+      rejected.push({ title: c.doc.title, reason: 'R6 非正式报道或与被检主体无直接关系' });
     }
   }
   if (controversyNotes.length) {
     rt.log('检索', `R6 发现公开抄袭指控报道 ${controversyNotes.length} 篇——转入「外界指控」栏呈堂`);
-    (rt as any).controversyNotes = controversyNotes;
+    rt.controversyNotes = controversyNotes;
   }
 
   // —— 源卫生 + 质量闸门（确定性过滤，全部记录淘汰原因）——
@@ -547,17 +561,22 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   // —— v2.2 LLM 相似度排序（批量评分）：目标画像 vs 候选标题+摘要 ——
   const pool = filtered.slice(0, 24);
   const scored: typeof filtered & { sim?: number; why?: string }[] = filtered.slice(0, 0);
-  let rankList: { idx: number; sim: number; why: string }[] = [];
+  let rankList: { idx: number; sim: number; why: string; relation: SourceDoc['subjectRelation'] }[] = [];
   if (pool.length) {
     rt.log('检索', '书记员对候选源做主题相似度评分与排序…');
     try {
       const rk = await chatJson<any>(
         rt.provider.chat,
-        'You rank candidate sources by semantic similarity to a target podcast episode profile. Similarity 0-100: 90+ = same specific subject AND likely same specific claims/examples; 70-89 = same specific subject; 40-69 = same broad domain; <40 = unrelated. Output only JSON: {"ranked":[{"idx":0,"sim":85,"why":"short reason"}]}. idx is the 0-based index in the candidate list. Rank ALL candidates.',
-        `目标画像：主题域=${cf.profile?.topicDomain || ''}\n核心论点：${(cf.profile?.coreClaims || []).slice(0, 5).join('；')}\n实体：${(cf.profile?.entities || []).slice(0, 12).join('；')}\n摘要：${cf.profile?.summaryZh || ''}\n\n候选源列表：\n${pool.map((c, i) => `${i}. ${c.doc.title} | ${String(c.doc.snippet || '').slice(0, 160).replace(/\n/g, ' ')}`).join('\n')}`,
+        'You rank candidate sources for source-dependency examination. Separate SUBJECT IDENTITY from topic similarity. relation must be direct_source (the candidate is plausibly a source for the target\'s concrete claims/examples), same_event (independent coverage of the same recent public event), same_topic (broadly related but not the same work/episode or a concrete source), unrelated, or unknown. Same-topic pages must never receive direct_source merely because names or themes overlap. Similarity 0-100 is retrieval relevance only, never evidence strength. Output only JSON: {"ranked":[{"idx":0,"sim":85,"relation":"direct_source|same_event|same_topic|unrelated|unknown","why":"short reason"}]}. Rank ALL candidates.',
+        `被检标题：${cf.target.title}\n被检作者/节目：${cf.target.author || ''}\n目标画像：主题域=${cf.profile?.topicDomain || ''}\n核心论点：${(cf.profile?.coreClaims || []).slice(0, 5).join('；')}\n实体：${(cf.profile?.entities || []).slice(0, 12).join('；')}\n摘要：${cf.profile?.summaryZh || ''}\n\n候选源列表：\n${pool.map((c, i) => `${i}. ${c.doc.title} | ${String(c.doc.snippet || '').slice(0, 160).replace(/\n/g, ' ')}`).join('\n')}`,
         { maxTokens: 3000 },
       );
-      rankList = ((rk.ranked || []) as any[]).map((r) => ({ idx: +r.idx, sim: Math.max(0, Math.min(100, +r.sim || 0)), why: String(r.why || '') })).filter((r) => r.idx >= 0 && r.idx < pool.length);
+      rankList = ((rk.ranked || []) as any[]).map((r) => ({
+        idx: +r.idx,
+        sim: Math.max(0, Math.min(100, +r.sim || 0)),
+        why: String(r.why || ''),
+        relation: (['direct_source', 'same_event', 'same_topic', 'unrelated', 'unknown'].includes(r.relation) ? r.relation : 'unknown') as SourceDoc['subjectRelation'],
+      })).filter((r) => r.idx >= 0 && r.idx < pool.length);
       rt.log('检索', `评分完成：${rankList.length}/${pool.length} 个候选获分`);
     } catch (e: any) {
       rt.log('检索', `相似度评分失败（${e.message.slice(0, 60)}），按检索顺序入卷`);
@@ -565,7 +584,16 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   }
   // 按相似度降序（无分者排后，保持原序）
   const simMap = new Map(rankList.map((r) => [r.idx, r]));
-  const ordered = pool.map((c, i) => ({ c, r: simMap.get(i) })).sort((a, b) => (b.r?.sim ?? -1) - (a.r?.sim ?? -1));
+  const ordered = pool
+    .map((c, i) => ({ c, r: simMap.get(i) }))
+    .sort((a, b) => (b.r?.sim ?? -1) - (a.r?.sim ?? -1))
+    .filter(({ c, r }) => {
+      if (r?.relation === 'same_topic' || r?.relation === 'unrelated') {
+        rejected.push({ title: c.doc.title, reason: r.relation === 'same_topic' ? '仅同题材，非被检主体或直接来源' : '与被检主体无直接关系' });
+        return false;
+      }
+      return true;
+    });
 
   // —— 取全文（前 maxSources+4），记录 partial ——
   rt.sources = [];
@@ -578,7 +606,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     let title = c.doc.title;
     try {
       const fd = await rt.fetcher.fetchDoc(c.doc.url);
-      fullText = fd.text;
+      fullText = stripPageChrome(fd.text);
       title = fd.title || title;
       partial = fullText.length < 800;
     } catch {
@@ -616,6 +644,8 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       viaQuery: c.via,
       similarity: r?.sim,
       aiSummary: r?.why,
+      subjectRelation: r?.relation || 'unknown',
+      subjectRelationNote: r?.why,
     });
     rt.log('检索', `候选源入卷 ${fetched.length}/${maxSources}（相似度 ${r?.sim ?? '?'}）：${title.slice(0, 44)}${partial ? '（部分取证）' : ''}`);
   }
@@ -900,7 +930,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   const EXAM_SYSTEM =
     cf.profile?.mediaType === 'fiction'
       ? 'You are an evidence examiner for LITERARY texts distinguishing genuine copying from innocent overlap. Given a target quote (Chinese fiction) and a source quote, classify: expression_copy = the two share SPECIFIC literary formulation unique to the source (same idiosyncratic image, same unusual name/place, same sentence-level phrasing, same narrative detail sequence) - something an independent writer would NOT coincidentally produce; fact_relay = both reference the same public fact/work/allusion in their own words; generic_overlap = both use a common literary trope or theme (reunion, nostalgia, a peach garden as beauty) without specific shared details; inconclusive = cannot tell. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}'
-      : 'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell (e.g. source quote too generic or truncated). Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}';
+      : 'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell. NEWS DISCIPLINE: when target and source cover the same recent public event, shared date, person, event/document name, official quote or headline fact MUST be fact_relay unless they also share uncommon prose, a non-public detail combination, or the same error. Multiple independent news reports repeating the elements is evidence of publicness, not expression copying. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}';
   const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
@@ -1006,11 +1036,21 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     }
   }
 
+  // S60HBY：证据链进入扩展与披露前先剥除 Jina/Markdown 图片、图标和媒体署名。
+  for (const ev of evidence) {
+    if (ev.targetQuote) ev.targetQuote = stripMarkdownMedia(ev.targetQuote);
+    if (ev.sourceQuote) ev.sourceQuote = stripMarkdownMedia(ev.sourceQuote);
+    if (ev.sourceParaphrase) ev.sourceParaphrase = stripMarkdownMedia(ev.sourceParaphrase);
+    if (ev.targetParaphrase) ev.targetParaphrase = stripMarkdownMedia(ev.targetParaphrase);
+  }
+
   // v3.2 上下文披露（用户要求：证据区披露被检内容附近的文本，经核查确保完整准确）：
   // 每条 E3/E4 证据存 contextTarget/contextSource——引文前后各~200字，命中句内嵌；
   // 披露内容机械校验：必须是目标文本/源全文的逐字子串（locateQuote 定位失败则不披露）
   {
     const buildContext = (quote: string, text: string): string | undefined => {
+      quote = stripMarkdownMedia(quote);
+      text = stripMarkdownMedia(text);
       if (!quote || !text) return undefined;
       const probe = quote.slice(0, Math.min(16, quote.length));
       const i = text.indexOf(probe);
@@ -1086,9 +1126,9 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
       if (g) {
         // 并入：记多源 + 保留最强检定
         const d = (g.detail || {}) as any;
-        const alsoSources = d.alsoSources || [{ sourceId: g.sourceId, sourceTitle: g.sourceTitle, sourceUrl: g.sourceUrl, sourceQuote: g.sourceQuote, examVerdict: g.examVerdict }];
+        const alsoSources = d.alsoSources || [{ sourceId: g.sourceId, sourceTitle: g.sourceTitle, sourceUrl: g.sourceUrl, sourceQuote: g.sourceQuote, examVerdict: g.examVerdict, subjectRelation: rt.sources.find((s) => s.id === g.sourceId)?.subjectRelation }];
         if (!alsoSources.some((s: any) => s.sourceId === ev.sourceId)) {
-          alsoSources.push({ sourceId: ev.sourceId, sourceTitle: ev.sourceTitle, sourceUrl: ev.sourceUrl, sourceQuote: ev.sourceQuote, examVerdict: ev.examVerdict });
+          alsoSources.push({ sourceId: ev.sourceId, sourceTitle: ev.sourceTitle, sourceUrl: ev.sourceUrl, sourceQuote: ev.sourceQuote, examVerdict: ev.examVerdict, subjectRelation: rt.sources.find((s) => s.id === ev.sourceId)?.subjectRelation });
         }
         g.detail = { ...d, alsoSources };
         const evStrong = ev.examVerdict === 'expression_copy';
@@ -1133,9 +1173,35 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
       }
       ev.sourceUrl = url;
       ev.sourceTranscribed = !!s.transcribed;
+      (ev.detail as any) = { ...(ev.detail || {}), subjectRelation: s.subjectRelation || 'unknown' };
+      if (Array.isArray((ev.detail as any).alsoSources)) {
+        (ev.detail as any).alsoSources = (ev.detail as any).alsoSources.map((item: any) => {
+          const source = rt.sources.find((candidate) => candidate.id === item.sourceId);
+          return source ? {
+            ...item,
+            sourceTitle: source.title,
+            sourceUrl: source.url,
+            subjectRelation: source.subjectRelation || 'unknown',
+          } : item;
+        });
+      }
       if (/\/series\/|\/show\//.test(url)) {
         (ev.detail as any) = { ...(ev.detail || {}), seriesPage: true };
       }
+    }
+  }
+
+  // S60HBY 纪律：多家媒体同时报道的日期/人名/官方文件名是公共新闻事实，
+  // 多源一致反而说明其公共性；没有独特措辞或共同错误时不得作为独特表达定案。
+  for (const ev of evidence) {
+    const alsoCount = Array.isArray((ev.detail as any)?.alsoSources) ? (ev.detail as any).alsoSources.length : 1;
+    const sameEventOnly = (ev.detail as any)?.subjectRelation === 'same_event';
+    const wordingLike = (ev.detail as any)?.overlapType === 'phrasing' || (ev.detail as any)?.transcriptionError;
+    if (!wordingLike && (sameEventOnly || looksLikeSharedNewsFact(ev, alsoCount))) {
+      ev.examVerdict = 'fact_relay';
+      ev.examNote = `该对应见于 ${alsoCount} 个独立新闻来源，核心为日期、人名、事件名或官方文件名等公共事实；未发现独特行文或共同错误。`;
+      (ev.detail as any) = { ...(ev.detail || {}), demoted: true, demotedFrom: ev.level, sharedNewsFact: true };
+      rt.log('对质', `公共新闻事实纪律：${ev.id} 降为线索级（${alsoCount} 个独立来源同步报道）`);
     }
   }
 
@@ -1161,28 +1227,29 @@ export async function verdictStage(
   extra?: { secondOpinion?: { provider: ProviderAdapter } },
 ): Promise<VerdictDoc> {
   // 汇总统计（v2.2.1：检定非 expression_copy 的 E3 不计入定案计数——它们仍展示，但不构成定案依据）
-  const effective = (e: EvidenceItem) => e.level === 'E3' && e.detail?.demoted ? false : true;
-  const fpHits = evidence.filter((e) => (e.level === 'E3' || e.level === 'E4') && effective(e));
+  const admittedEvidence = evidence.filter(isAdmissibleEvidence);
+  const admissionCount = countAdmissibleEvidenceGroups(evidence);
+  const fpHits = admittedEvidence.filter((e) => e.level === 'E3' || e.level === 'E4');
   const distinctFps = new Set(fpHits.map((e) => e.id.split('-')[1])).size;
   const stats = {
-    e4: evidence.filter((e) => e.level === 'E4').length,
-    e3: evidence.filter((e) => e.level === 'E3' && effective(e)).length,
+    e4: admittedEvidence.filter((e) => e.level === 'E4').length,
+    e3: admittedEvidence.filter((e) => e.level === 'E3').length,
     e3DistinctFingerprints: distinctFps,
-    e2: evidence.some((e) => e.level === 'E2' && effective(e)),
+    e2: admittedEvidence.some((e) => e.level === 'E2'),
     e1: !!cf.profile && (cf.profile.entities.length > 0 || cf.profile.outline.length > 0),
-    e5: evidence.filter((e) => e.level === 'E5').length,
+    e5: admittedEvidence.filter((e) => e.level === 'E5').length,
   };
-  const v = mapVerdictPublic(stats, cf.attribution, !cf.target.degraded, rt.sources.length > 0);
+  const v = mapVerdictPublic(stats, cf.attribution, !cf.target.degraded, rt.sources.length > 0, admissionCount);
 
-  rt.log('宣判', `裁决计算完成：${v.word}（${v.rule}）`);
+  rt.log('宣判', `证据准入：正式证据 ${admissionCount} 组 / 立案门槛 ${MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组；${v.word}（${v.rule}）`);
 
   // v3.1 总括判词（8E9GJP 案用户要求）：先给整体相似性/痕迹形态总述，再进具体清单
   let overview = '';
   try {
     const ov = await chatJson<any>(
       rt.provider.chat,
-      'Write ONE overview sentence (<=120 chars, plain Chinese, no jargon) summarizing the OVERALL relationship between the audited content and the sources: what kind of correspondence was found (same errors / same data combinations / structural similarity / only topic overlap / nothing), across how many independent sources, and how strong the trace pattern looks. This is the FIRST thing the reader sees before the evidence list - it must be a fair summary of the evidence, not a verdict. Output only JSON: {"overview":"..."}',
-      `证据概览：\n${evidence.filter((e) => e.level !== 'E1').slice(0, 10).map((e) => `[${e.level}] ${e.plainTitle || e.kind}｜${e.description.slice(0, 80)}`).join('\n')}\n\n候选源：${rt.sources.map((s) => `${s.id} ${s.title.slice(0, 30)}（相似度${s.similarity ?? '?'}）`).join('；')}`,
+      'Write ONE overview sentence (<=120 chars, plain Chinese, no jargon) summarizing ONLY the ADMITTED evidence groups and separately mention how many clues were excluded. Retrieval similarity scores are search-ranking metadata and MUST NEVER be described as evidence similarity or data-combination similarity. Public-news fact relays are clues, not unique-expression evidence. Output only JSON: {"overview":"..."}',
+      `正式证据组（${admissionCount}）：\n${admittedEvidence.slice(0, 20).map((e) => `${e.plainTitle || e.kind}｜${e.description}`).join('\n') || '无'}\n\n线索或负面查证（${evidence.length - admissionCount}）：\n${evidence.filter((e) => !isAdmissibleEvidence(e)).slice(0, 20).map((e) => `${e.plainTitle || e.kind}｜${e.description}`).join('\n') || '无'}\n\n候选源主体关系：${rt.sources.map((s) => `${s.title.slice(0, 30)}（${s.subjectRelation || 'unknown'}）`).join('；')}`,
       { maxTokens: 300 },
     );
     overview = cjkPunctNormalize(String(ov.overview || ''));
@@ -1201,14 +1268,47 @@ export async function verdictStage(
 
   let brief: import('../court/agents/prosecutor').ProsecutionBrief | null = null;
   let rebuttal: import('../court/agents/defender').DefenseRebuttal | null = null;
-  const positiveEv = evidence.filter((e) => e.level === 'E2' || e.level === 'E3' || e.level === 'E4');
-  if (positiveEv.length) {
+  const debateRounds: { round: number; prosecution: string; defense: string }[] = [];
+  const positiveEv = admittedEvidence.filter((e) => e.level !== 'E1');
+  if (admissionCount >= MIN_ADMISSIBLE_EVIDENCE_GROUPS && positiveEv.length > 0) {
     rt.log('宣判', '公诉人立论…');
     brief = await runProsecutor(orch, chatFn, evidence, rt.sources, cf.target.title);
     rt.log('宣判', '辩护人驳斥…');
     rebuttal = await runDefender(orch, chatFn, evidence, brief!, cf.target.title, cf.declaredCitations);
+    debateRounds.push({ round: 1, prosecution: brief!.argument, defense: rebuttal!.overall });
+
+    // 正式证据达到立案门槛时追加一轮复辩；最多两轮，失败不阻塞裁决。
+    if (orch.canExtendDebate()) {
+      try {
+        orch.session.round = 2;
+        orch.note('prosecutor', '第二轮复辩开始：逐项回应辩方质疑');
+        const reply = await chatJson<any>(
+          rt.provider.chat,
+          '你是公诉人。只根据已准入的结构化证据与第一轮辩方意见，用简体中文逐项回应最关键的质疑。不得扩大指控，不得把检索相似度当作证据强度。输出 JSON：{"reply":"不超过260字"}',
+          `正式证据：\n${positiveEv.map((e, i) => `${i + 1}. ${e.description}\n目标：${e.targetQuote || '结构证据'}\n来源：${e.sourceQuote || '结构证据'}`).join('\n')}\n\n第一轮辩方意见：${rebuttal!.overall}\n${rebuttal!.attacks.map((a) => `· ${a.reason}`).join('\n')}`,
+          { maxTokens: 500 },
+        );
+        orch.note('defender', '第二轮答辩开始：复核公诉人回应');
+        const finalDefense = await chatJson<any>(
+          rt.provider.chat,
+          '你是辩护人。复核公诉人的第二轮回应，指出仍未排除的巧合、公共事实或方法盲点。简体中文，保持克制。输出 JSON：{"reply":"不超过260字"}',
+          `公诉人复辩：${String(reply.reply || '')}\n\n第一轮辩方意见：${rebuttal!.overall}`,
+          { maxTokens: 500 },
+        );
+        const prosecutionReply = cjkPunctNormalize(String(reply.reply || ''));
+        const defenseReply = cjkPunctNormalize(String(finalDefense.reply || ''));
+        if (prosecutionReply || defenseReply) {
+          debateRounds.push({ round: 2, prosecution: prosecutionReply, defense: defenseReply });
+          brief!.argument = `${brief!.argument}\n\n第二轮复辩：${prosecutionReply}`;
+          rebuttal!.overall = `${rebuttal!.overall}\n\n第二轮答辩：${defenseReply}`;
+        }
+        orch.note('orchestrator', '第二轮复辩完成，材料移交法官');
+      } catch (e: any) {
+        orch.note('orchestrator', `第二轮复辩未完成：${String(e?.message || e).slice(0, 60)}`);
+      }
+    }
   } else {
-    orch.note('orchestrator', '无正面证据——控辩双方不出庭，直接宣判');
+    orch.note('orchestrator', `正式查证 ${admissionCount} 组，其中正面证据 ${positiveEv.length} 组——无须启动完整控辩`);
   }
   cf.trialLog = [...orch.session.agentLog];
 
@@ -1250,7 +1350,7 @@ export async function verdictStage(
     }
   }
 
-  return buildVerdictDoc(cf, rt, evidence, v, opinion, crossChecks, { brief, rebuttal, overview });
+  return buildVerdictDoc(cf, rt, evidence, v, opinion, crossChecks, { brief, rebuttal, overview, admissionCount, debateRounds });
 }
 
 // mapVerdict 的公开包装（避免内核层反向依赖流水线）
@@ -1260,8 +1360,9 @@ function mapVerdictPublic(
   attribution: Parameters<typeof mapVerdict>[1],
   usable: boolean,
   hadCandidates: boolean,
+  admissibleGroups?: number,
 ): VerdictResult {
-  return mapVerdict(stats, attribution, usable, hadCandidates);
+  return mapVerdict(stats, attribution, usable, hadCandidates, admissibleGroups);
 }
 
 export interface VerdictDoc {
@@ -1275,7 +1376,10 @@ export interface VerdictDoc {
   /** v3 控辩双方意见 */
   prosecution?: { argument: string; charges: { evidenceId: string; charge: string }[] } | null;
   defense?: { attacks: { evidenceId: string; angle: string; reason: string }[]; overall: string; whatWouldChange: string } | null;
+  debateRounds: { round: number; prosecution: string; defense: string }[];
   crossChecks: { evidenceId: string; risk: string; note: string }[];
+  admission: { required: number; admitted: number; discovered: number; status: 'sufficient' | 'insufficient' };
+  externalClaims: { title: string; url: string; snippet?: string }[];
   disclaimer: string;
   namingFootnote: string;
   generatedAt: string;
@@ -1289,7 +1393,7 @@ export function buildVerdictDoc(
   v: VerdictResult,
   opinion: string,
   crossChecks: { evidenceId: string; risk: string; note: string }[],
-  trial?: { brief?: import('../court/agents/prosecutor').ProsecutionBrief | null; rebuttal?: import('../court/agents/defender').DefenseRebuttal | null; overview?: string },
+  trial?: { brief?: import('../court/agents/prosecutor').ProsecutionBrief | null; rebuttal?: import('../court/agents/defender').DefenseRebuttal | null; overview?: string; admissionCount?: number; debateRounds?: { round: number; prosecution: string; defense: string }[] },
 ): VerdictDoc {
   const limits: string[] = [];
   if (cf.target.degraded) limits.push('目标内容取证降级：' + (cf.target.degradeReason || '部分取证'));
@@ -1304,9 +1408,9 @@ export function buildVerdictDoc(
     limits.push('检索穷尽性局限：受版权保护的作品正文（纸刊/付费墙/出版社平台）不在开放网络检索范围内——「未发现」仅指公开网络检索范围内未发现，不覆盖未数字化的出版物与需授权访问的内容');
   }
   // v2.2.9 外界指控呈堂：有公开抄袭指控报道时，判决书必须显式披露（即使本庭未发现接触痕迹）
-  const cNotes = (rt as any).controversyNotes as string[] | undefined;
+  const cNotes = rt.controversyNotes;
   if (cNotes?.length) {
-    limits.push(`【外界指控】公开网络存在 ${cNotes.length} 篇关于该作品/作者的抄袭指控报道（含被指原作信息）——本庭的自动比对未发现对应痕迹不代表指控不成立，请读者核验报道原文：${cNotes.slice(0, 3).join('；')}`);
+    limits.push(`外界指控：发现 ${cNotes.length} 篇与被检主体直接相关且符合报道体例的公开材料；其内容单独列示，不替代本庭的原文比对。`);
   }
   // v2.2.9 归属链性质声明（用户指出：已发表≠原创——正式发表渠道只做编辑筛选不做原创核查）
   if (cf.attribution === 'complete' && rt.mirrorNotes?.length) {
@@ -1330,6 +1434,19 @@ export function buildVerdictDoc(
   }));
   const limitsN = limits.map(cjkPunctNormalize);
 
+  cf.fingerprints = cf.fingerprints.map((fingerprint) => ({
+    ...fingerprint,
+    quote: fingerprint.quote || fingerprint.targetQuote,
+  }));
+
+  const processEntries = (rt.processLog || []).map((entry) => ({
+    at: entry.at,
+    role: (entry.stage === '立案' || entry.stage === '检索' ? 'clerk' : entry.stage === '侦查' || entry.stage === '对质' ? 'evidence_officer' : 'orchestrator'),
+    action: entry.note,
+  }));
+  cf.trialLog = [...processEntries, ...(cf.trialLog || [])];
+  const admissionCount = trial?.admissionCount ?? countAdmissibleEvidenceGroups(evidenceN);
+
   return {
     caseFile: cf,
     sources: rt.sources,
@@ -1343,7 +1460,15 @@ export function buildVerdictDoc(
     defense: trial?.rebuttal
       ? { attacks: trial.rebuttal.attacks, overall: trial.rebuttal.overall, whatWouldChange: trial.rebuttal.whatWouldChange }
       : null,
+    debateRounds: trial?.debateRounds || [],
     crossChecks,
+    admission: {
+      required: MIN_ADMISSIBLE_EVIDENCE_GROUPS,
+      admitted: admissionCount,
+      discovered: evidenceN.length,
+      status: admissionCount >= MIN_ADMISSIBLE_EVIDENCE_GROUPS ? 'sufficient' : 'insufficient',
+    },
+    externalClaims: cNotes || [],
     disclaimer: DISCLAIMER,
     namingFootnote: NAMING_FOOTNOTE,
     generatedAt: new Date().toISOString(),

@@ -2,8 +2,17 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import type { CaseFile, SourceDoc } from '../court/types';
 import type { EvidenceItem, VerdictResult } from '../court/evidence';
 import type { VerdictDoc } from '../pipeline';
-import { DISCLAIMER, EVIDENCE_LEVEL_INFO, PLAIN_CRITERIA, plainLevelName } from '../court/evidence';
-import { DEFAULT_SETTINGS } from '../store/local';
+import {
+  DISCLAIMER,
+  EVIDENCE_LEVEL_INFO,
+  PLAIN_CRITERIA,
+  MIN_ADMISSIBLE_EVIDENCE_GROUPS,
+  evidenceExclusionReason,
+  isAdmissibleEvidence,
+  plainLevelName,
+} from '../court/evidence';
+import { DEFAULT_SETTINGS, defaultPresetForProvider, presetsForProvider } from '../store/local';
+import { stripMarkdownMedia } from '../court/chromeStrip';
 
 export type Tab = 'court' | 'archive' | 'settings' | 'about';
 
@@ -15,6 +24,8 @@ interface ObjectionCue {
   detail: string;
   targetQuote?: string;
   sourceQuote?: string;
+  index: number;
+  total: number;
 }
 
 export interface RunningState {
@@ -27,44 +38,47 @@ export interface RunningState {
   shake: boolean;
 }
 
-const SOUND_PREFERENCE_KEY = 'health-court.sound-enabled.v1';
-
-const readSoundPreference = (): boolean => {
-  try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem(SOUND_PREFERENCE_KEY) === 'true';
-  } catch {
-    return false;
-  }
-};
-
-type CourtToneKind = 'preview' | 'objection' | 'complete' | 'gavel';
-
-const playCourtTone = (enabled: boolean, kind: CourtToneKind) => {
-  if (!enabled || typeof window === 'undefined') return;
+const playGavelImpact = () => {
+  if (typeof window === 'undefined') return;
   const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
   if (!AudioContextCtor) return;
 
   const context = new AudioContextCtor();
-  const notes = kind === 'complete' ? [523, 659, 784] : kind === 'objection' ? [659, 880] : kind === 'gavel' ? [180, 108] : [659];
-  const noteLength = kind === 'complete' ? 0.16 : kind === 'gavel' ? 0.085 : 0.11;
-  const gap = kind === 'complete' ? 0.13 : kind === 'gavel' ? 0.038 : 0.09;
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(0.18, now + 0.004);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  master.connect(context.destination);
 
-  notes.forEach((frequency, index) => {
-    const startAt = context.currentTime + index * gap;
+  // 清脆木质瞬态：高通噪声 + 两个快速下坠的短音。
+  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 0.055), context.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 3);
+  const noise = context.createBufferSource();
+  const highpass = context.createBiquadFilter();
+  highpass.type = 'highpass';
+  highpass.frequency.value = 850;
+  noise.buffer = buffer;
+  noise.connect(highpass);
+  highpass.connect(master);
+  noise.start(now);
+
+  [1480, 720].forEach((frequency, index) => {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
-    oscillator.type = kind === 'gavel' && index === 0 ? 'square' : 'triangle';
-    oscillator.frequency.setValueAtTime(frequency, startAt);
-    gain.gain.setValueAtTime(0.0001, startAt);
-    gain.gain.exponentialRampToValueAtTime(kind === 'gavel' ? 0.075 : 0.055, startAt + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + noteLength);
+    oscillator.type = index === 0 ? 'triangle' : 'sine';
+    oscillator.frequency.setValueAtTime(frequency, now);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 0.56, now + 0.09);
+    gain.gain.setValueAtTime(index === 0 ? 0.16 : 0.09, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
     oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(startAt);
-    oscillator.stop(startAt + noteLength);
+    gain.connect(master);
+    oscillator.start(now);
+    oscillator.stop(now + 0.12);
   });
 
-  window.setTimeout(() => void context.close(), 900);
+  window.setTimeout(() => void context.close(), 500);
 };
 
 function CourtGavel(): React.ReactElement {
@@ -75,27 +89,31 @@ function CourtGavel(): React.ReactElement {
       type="button"
       onClick={() => {
         setHit((value) => value + 1);
-        playCourtTone(true, 'gavel');
+        playGavelImpact();
       }}
       aria-label="重放法槌敲击"
       title="点击重放法槌敲击"
     >
       <span className="gavel-stage" aria-hidden="true">
-        <svg key={hit} className="gavel-svg" viewBox="0 0 220 170" role="presentation">
+        <svg key={hit} className="gavel-svg" viewBox="0 0 300 220" role="presentation">
           <g className="gavel-motion">
-            <rect className="gavel-fill" x="42" y="36" width="136" height="50" rx="12" />
-            <path className="gavel-band" d="M72 38v46M148 38v46" />
-            <path className="gavel-handle" d="M110 87v49" />
-            <path className="gavel-grip" d="M110 119v24" />
+            <path className="gavel-head" d="M156 111h99c10 0 18 8 18 18v24c0 10-8 18-18 18h-99c-10 0-18-8-18-18v-24c0-10 8-18 18-18Z" />
+            <path className="gavel-band" d="M171 114v54M239 114v54" />
+            <path className="gavel-handle" d="m162 126-96-72" />
+            <path className="gavel-grip" d="M91 73 52 44" />
           </g>
-          <g className="gavel-impact">
-            <path d="M64 148h92" />
-            <path d="m53 132-16-8M48 149H27M167 131l16-9" />
-            <path className="gavel-block" d="M75 139h70l12 11H63z" />
+          <g className="gavel-splash">
+            <path className="splash-red" d="m228 171 27-17-10 28 35 2-31 13 17 20-34-10-9 26-7-29-28 11 20-23-28-8 34-5-10-27 24 19Z" />
+            <path className="splash-ochre" d="m230 176 15-9-5 15 19 2-18 7 9 11-19-6-5 14-4-16-15 6 11-12-16-5 19-3-6-15 15 11Z" />
+            <path className="splash-blue" d="m206 181-27-22M210 197l-35 8M243 158l13-25M255 201l30 16" />
+          </g>
+          <g className="gavel-block">
+            <path d="M190 183h72l14 14h-99Z" />
+            <path d="M182 198h91" />
           </g>
         </svg>
       </span>
-      <span className="gavel-caption">点击法槌重放</span>
+      <span className="gavel-caption">点击试听落槌声</span>
     </button>
   );
 }
@@ -119,6 +137,46 @@ const HighlightQuote = ({ text, phrase }: { text: string; phrase?: string }) => 
 const roleZh = (r: string) =>
   ({ clerk: '书记员', evidence_officer: '证据官', prosecutor: '公诉人', defender: '辩护人', judge: '法官', court_clerk: '法官助理', orchestrator: '审判长' } as Record<string, string>)[r] || r;
 
+const formatLocalTime = (iso: string) => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? String(iso).slice(11, 19) : date.toLocaleTimeString('zh-CN', { hour12: false });
+};
+
+const formatTrialAction = (role: string, action: string) => {
+  const chars = action.match(/共\s*(\d+)\s*字符/)?.[1];
+  if (/控方立论.*启动/.test(action)) return `开始整理控方证据${chars ? `（材料 ${chars} 字）` : ''}`;
+  if (/控方立论.*完成/.test(action)) return '控方证据整理完成';
+  if (/辩方驳斥.*启动/.test(action)) return `开始核对引用并提出抗辩${chars ? `（材料 ${chars} 字）` : ''}`;
+  if (/辩方驳斥.*完成/.test(action)) return '辩方抗辩完成';
+  if (/法官判词.*启动/.test(action)) return `开始复核控辩材料${chars ? `（材料 ${chars} 字）` : ''}`;
+  if (/法官判词.*完成/.test(action)) return '裁决意见整理完成';
+  if (/→.*BRIEF/.test(action)) return '提交控方意见';
+  if (/→.*REBUTTAL/.test(action)) return '提交辩方意见';
+  if (/→.*VERDICT/.test(action)) return '提交裁决草案';
+  const cleaned = action
+    .replace(/\b(?:evidenceList|sourcesBrief|prosecutionBrief|citationMap|evidenceTop|citationNote|verdict)\b/gi, '材料')
+    .replace(/\b(?:EV|SRC|FP)\S*/g, '证据')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || `${roleZh(role)}完成本阶段工作`;
+};
+
+const LinkifiedText = ({ text }: { text: string }) => {
+  const normalizedText = String(text || '').replace(/\bSRC(\d+)\b/gi, '候选源$1');
+  const parts = normalizedText.split(/(https?:\/\/[^\s；，。]+)/g);
+  return <>{parts.map((part, index) => /^https?:\/\//.test(part)
+    ? <a key={index} href={part} target="_blank" rel="noreferrer">打开原文 ↗</a>
+    : <React.Fragment key={index}>{part}</React.Fragment>)}</>;
+};
+
+const normalizeOverviewForDisplay = (text: string, sources: number, admitted: number, total: number) => {
+  const cleaned = stripMarkdownMedia(text || '').trim();
+  if (/(?:数据组合|证据)相似度|(?:相似度为?|similarity)\s*\d+\s*%/i.test(cleaned)) {
+    return `已完成 ${sources} 个候选源核查；${admitted} 组正式查证，${Math.max(0, total - admitted)} 条线索未准入。相似度仅用于检索排序，不代表证据强度。`;
+  }
+  return cleaned;
+};
+
 /** v2.2.1 代号白话化：把后端标识（FP6/rare_case/SRC1）翻译成用户可读语言 */
 const plainFpType = (ty?: string) =>
   ({ weird_term: '异常用词', rare_case: '冷门案例', data_combo: '数据组合', analogy: '独特类比', joke: '专属玩笑', ordering: '罕见排序', other: '其他特征' } as Record<string, string>)[ty || ''] || ty || '';
@@ -140,23 +198,7 @@ export function App(): React.ReactElement {
   const [verdictDoc, setVerdictDoc] = useState<VerdictDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mentalHygiene, setMentalHygiene] = useState<string | null>(null);
-  const [soundEnabled, setSoundEnabled] = useState(readSoundPreference);
-  const soundEnabledRef = useRef(soundEnabled);
   const logRef = useRef<HTMLDivElement>(null);
-
-  const toggleSound = useCallback(() => {
-    setSoundEnabled((current) => {
-      const next = !current;
-      soundEnabledRef.current = next;
-      try {
-        localStorage.setItem(SOUND_PREFERENCE_KEY, String(next));
-      } catch {
-        // 隐私模式或存储不可用时，当前会话内仍然生效。
-      }
-      if (next) playCourtTone(true, 'preview');
-      return next;
-    });
-  }, []);
 
   /** 播客单集自动转录：Apple→iTunes enclosure / 小宇宙→shownotes 内无音频则提示 */
   const logSinkRef = useRef<(stage: string, note: string) => void>(() => {});
@@ -300,7 +342,7 @@ export function App(): React.ReactElement {
     try {
       const { loadSettings } = await import('../store/local');
       const s = loadSettings();
-      if (!s.apiKey) throw new Error('尚未配置 API Key。请到「设置」页填写（默认 GLM / glm-4-flash）。');
+      if (!s.apiKey) throw new Error('尚未配置 API Key。请到「设置」页填写（默认 GLM / glm-5.2）。');
       const { createGlmProvider } = await import('../providers/glm');
       const { createOpenAiCompatProvider, createJinaFetcher } = await import('../providers/openai-compat');
       const { createDeepSeekProvider, createGeminiProvider } = await import('../providers/multi');
@@ -309,9 +351,9 @@ export function App(): React.ReactElement {
       if (s.kind === 'glm') {
         provider = createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model, searchModel: s.searchModel || undefined });
       } else if (s.kind === 'deepseek') {
-        provider = createDeepSeekProvider({ apiKey: s.apiKey, model: s.model || 'deepseek-chat' });
+        provider = createDeepSeekProvider({ apiKey: s.apiKey, model: s.model || 'deepseek-v4-flash' });
       } else if (s.kind === 'gemini') {
-        provider = createGeminiProvider({ apiKey: s.apiKey, model: s.model || 'gemini-2.0-flash' });
+        provider = createGeminiProvider({ apiKey: s.apiKey, model: s.model || 'gemini-3.7-flash' });
       } else {
         provider = createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
       }
@@ -352,7 +394,7 @@ export function App(): React.ReactElement {
         scrollLog();
       };
 
-      const rt = { provider, fetcher, log: pushLog, evidence: [] as EvidenceItem[], sources: [] as SourceDoc[] };
+      const rt = { provider, fetcher, log: pushLog, evidence: [] as EvidenceItem[], sources: [] as SourceDoc[], processLog: logs };
       const pipeline = await import('../pipeline');
 
       const inputObj = input.trim() ? { url: input.trim(), text: bodyText.trim() || undefined } : { text: bodyText };
@@ -421,45 +463,46 @@ export function App(): React.ReactElement {
       // 对质证据先完整落位，再进入异议演出；宣判阶段只在演出结束后点亮。
       setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
 
-      const clipQuote = (quote?: string) => quote?.replace(/\s+/g, ' ').trim().slice(0, 180) || undefined;
-      const objectionQueue: ObjectionCue[] = evidence
-        .filter((item): item is EvidenceItem & { level: 'E3' | 'E4' } => item.level === 'E3' || item.level === 'E4')
-        .map((item) => ({
+      const clipQuote = (quote?: string) => quote ? stripMarkdownMedia(quote).replace(/\s+/g, ' ').trim().slice(0, 620) || undefined : undefined;
+      const objectionEvidence = evidence
+        .filter((item): item is EvidenceItem & { level: 'E3' | 'E4' } => (item.level === 'E3' || item.level === 'E4') && isAdmissibleEvidence(item));
+      const objectionQueue: ObjectionCue[] = objectionEvidence
+        .map((item, index) => ({
           title: '异议！',
           level: item.level,
-          detail: item.description.slice(0, 96),
+          detail: stripMarkdownMedia(item.description).slice(0, 420),
           targetQuote: clipQuote(item.targetQuote),
           sourceQuote: clipQuote(item.sourceQuote),
+          index: index + 1,
+          total: objectionEvidence.length,
         }));
 
       if (objectionQueue.length > 0) {
         await new Promise<void>((resolve) => {
-          let timer: number | undefined;
           let finished = false;
+          let current = 0;
 
           const finish = () => {
             if (finished) return;
             finished = true;
-            if (timer !== undefined) window.clearTimeout(timer);
             setRunning((r) => (r ? { ...r, objection: null, shake: false } : r));
-            delete (window as any).__hcSkipObjection;
+            delete (window as any).__hcAdvanceObjection;
             resolve();
           };
 
-          const step = (index: number) => {
+          const step = () => {
             if (finished) return;
-            if (index >= objectionQueue.length) {
+            if (current >= objectionQueue.length) {
               finish();
               return;
             }
-            const cue = objectionQueue[index];
+            const cue = objectionQueue[current];
             setRunning((r) => (r ? { ...r, stageIndex: 3, objection: cue, shake: cue.level === 'E4' } : r));
-            playCourtTone(soundEnabledRef.current, 'objection');
-            timer = window.setTimeout(() => step(index + 1), 3200);
+            current += 1;
           };
 
-          (window as any).__hcSkipObjection = finish;
-          step(0);
+          (window as any).__hcAdvanceObjection = step;
+          step();
         });
       }
 
@@ -469,7 +512,6 @@ export function App(): React.ReactElement {
       setVerdictDoc(doc);
       const { saveToArchive } = await import('../store/local');
       saveToArchive(doc);
-      playCourtTone(soundEnabledRef.current, 'complete');
     } catch (e: any) {
       if (String(e?.message) === '__MENTAL_HYGIENE__') {
         setRunning(null);
@@ -488,7 +530,7 @@ export function App(): React.ReactElement {
             <span className="logo-cn">
               卫生<span className="typo-mark">法庭</span>
             </span>
-            <span className="brand-slogan">拒绝二手转述，注重精神卫生</span>
+            <span className="brand-slogan">适度创作益脑，沉迷AI伤身。拒绝循环文本，守护精神卫生。</span>
           </div>
           <nav className="nav-tabs">
             {(['court', 'archive', 'settings', 'about'] as Tab[]).map((t) => (
@@ -529,11 +571,16 @@ export function App(): React.ReactElement {
             error={error}
             run={run}
             logRef={logRef}
-            soundEnabled={soundEnabled}
-            toggleSound={toggleSound}
           />
         )}
-        {tab === 'archive' && <Archive />}
+        {tab === 'archive' && (
+          <Archive
+            onOpen={(doc) => {
+              setVerdictDoc(doc);
+              setTab('court');
+            }}
+          />
+        )}
         {tab === 'settings' && <Settings />}
         {tab === 'about' && <About />}
         </div>
@@ -560,10 +607,8 @@ function Courtroom(props: {
   error: string | null;
   run: () => void;
   logRef: React.RefObject<HTMLDivElement>;
-  soundEnabled: boolean;
-  toggleSound: () => void;
 }): React.ReactElement {
-  const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef, soundEnabled, toggleSound } = props;
+  const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef } = props;
   const [exporting, setExporting] = useState(false);
 
   const exportHtml = useCallback(async () => {
@@ -595,12 +640,11 @@ function Courtroom(props: {
           role="dialog"
           aria-modal="true"
           aria-live="assertive"
-          onClick={() => { (window as any).__hcSkipObjection?.(); }}
         >
           <div className={'objection-dialog ' + (running.objection.level === 'E4' ? 'is-e4' : 'is-e3')}>
-            <div className="objection-kicker">当前阶段 · 对质</div>
+            <div className="objection-kicker">当前阶段 · 对质｜正式证据 {running.objection.index}/{running.objection.total}</div>
             <div className="objection-text">{running.objection.title}</div>
-            <div className="objection-level">{running.objection.level} · 文本指纹命中</div>
+            <div className="objection-level">证据准入 · 原文定位通过</div>
             {(running.objection.targetQuote || running.objection.sourceQuote) && (
               <div className="objection-quotes">
                 {running.objection.targetQuote && (
@@ -618,7 +662,9 @@ function Courtroom(props: {
               </div>
             )}
             <p className="objection-detail">{running.objection.detail}</p>
-            <button className="objection-continue" type="button">继续庭审</button>
+            <button className="objection-continue" type="button" onClick={() => { (window as any).__hcAdvanceObjection?.(); }}>
+              {running.objection.index < running.objection.total ? '查看下一组证据' : '关闭异议并继续庭审'}
+            </button>
           </div>
         </div>
       )}
@@ -683,17 +729,7 @@ function Courtroom(props: {
               <span className="process-eyebrow">庭审流程</span>
               <h2>核查进行中 <small>当前 · {STAGES[running.stageIndex]}</small></h2>
             </div>
-            <button
-              className={'sound-toggle' + (soundEnabled ? ' is-on' : '')}
-              type="button"
-              aria-pressed={soundEnabled}
-              onClick={toggleSound}
-              title="异议与庭审结束时播放提示音"
-            >
-              <span aria-hidden="true">◖))</span>
-              提示音 {soundEnabled ? '开' : '关'}
-              <small>庭审结束提醒</small>
-            </button>
+            <span className="process-status-note">过程自动记录 · 完成后生成判决书</span>
           </div>
           <div className="stage-bar">
             {STAGES.map((s, i) => (
@@ -712,7 +748,7 @@ function Courtroom(props: {
             {running.logs.map((l, i) => (
               <div className="log-line" key={i}>
                 <span className="stage-tag">[{l.stage}]</span>
-                {l.note}
+                <span className="log-note">{l.note}</span>
               </div>
             ))}
           </div>
@@ -743,22 +779,35 @@ function VerdictView(props: {
 }): React.ReactElement {
   const { doc, onExportHtml, onExportJson, exporting } = props;
   const v = doc.verdict;
+  const admittedCount = doc.admission?.admitted ?? doc.evidence.filter(isAdmissibleEvidence).length;
+  const requiredCount = doc.admission?.required ?? MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+  const displayWord = admittedCount < requiredCount && !['休庭', '不予受理'].includes(v.word) ? '不足立案' : v.word;
+  const displayRule = displayWord === '不足立案'
+    ? `正式证据仅 ${admittedCount} 组，未达到 ${requiredCount} 组立案门槛；现有内容仅作线索展示，不出具倾向性裁决`
+    : v.rule;
+  const overviewText = normalizeOverviewForDisplay(String((doc as any).overview || ''), doc.sources.length, admittedCount, doc.evidence.length);
+  const visibleLimits = doc.limits.filter((item) => !/^\s*【外界指控】/.test(String(item)));
   return (
     <div className="court-flow verdict-flow">
       <section className="panel court-sheet verdict-stage-panel">
         <span className="verdict-kicker">庭审终局 · 本案裁决</span>
         <CourtGavel />
-        <div className={'verdict-word ' + v.word}>{v.word}</div>
-        {v.word === '可能卫生' && (
+        <div className={'verdict-word ' + displayWord}>{displayWord}</div>
+        {displayWord === '可能卫生' && (
           <div className="verdict-note">请持续关注精神卫生。</div>
         )}
         <a className="verdict-jump" href="#evidence-list">查看证据清单 ↓</a>
         <div className="stamp">卫生法庭 · 宣判</div>
-        <p className="verdict-rule">{v.rule}</p>
+        <p className="verdict-rule">{displayRule}</p>
         <p className="verdict-rule verdict-counts">
           错误照搬×{v.counts.E4} · 罕见材料×{v.counts.E3} · 论证链同构{v.counts.E2 ? '√' : '—'} · 句式直译×{v.counts.E5} ｜ 来源标注：
           {v.attribution === 'complete' ? '完整（仅指发布署名，不证明原创）' : v.attribution === 'partial' ? '部分' : v.attribution === 'none' ? '无' : '不明'}
         </p>
+        <div className={'admission-meter ' + (admittedCount >= requiredCount ? 'is-sufficient' : 'is-insufficient')}>
+          <span>证据准入</span>
+          <strong>{admittedCount} / {requiredCount} 组</strong>
+          <small>{admittedCount >= requiredCount ? '达到正式立案门槛' : '未达到立案门槛，仅展示线索'}</small>
+        </div>
       </section>
 
       <section className="panel court-sheet verdict-document-panel">
@@ -783,7 +832,7 @@ function VerdictView(props: {
                   ? '（无）'
                   : doc.sources.map((s) => (
                       <div key={s.id} style={{ marginBottom: 4 }}>
-                        {s.id} 《{s.title}》 {s.partial ? '（部分取证）' : ''}{' '}
+                        {s.id.replace(/^SRC/i, '候选源')} 《{s.title}》 {s.partial ? '（部分取证）' : ''}{' '}
                         <a href={s.url} target="_blank" rel="noreferrer">
                           ↗
                         </a>
@@ -795,17 +844,18 @@ function VerdictView(props: {
         </table>
 
         {(() => {
-          const positive = doc.evidence.filter((e: any) => e.level !== 'E1');
-          const negative = doc.evidence.filter((e: any) => e.level === 'E1');
+          const positive = doc.evidence.filter((e: any) => isAdmissibleEvidence(e));
+          const negative = doc.evidence.filter((e: any) => !isAdmissibleEvidence(e));
           return (
             <>
-              {(doc as any).overview && (
+              {overviewText && (
           <div style={{ margin: '14px 0', padding: '10px 14px', background: 'rgba(107,143,113,0.07)', borderLeft: '3px solid var(--green, #6B8F71)', borderRadius: 4, fontSize: 14, lineHeight: 1.9 }}>
-            <span style={{ fontWeight: 700 }}>总体对应形态｜</span>{(doc as any).overview}
+            <span style={{ fontWeight: 700 }}>总体对应形态｜</span>{overviewText}
           </div>
         )}
-        <h3 id="evidence-list" style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>证据清单（{positive.length}）</h3>
-              {positive.length === 0 && <p className="hint">本案无命中证据——但这不是终点，见下方「已查证清单」。</p>}
+        <h3 id="evidence-list" className="evidence-section-title">正式证据组（{positive.length}）</h3>
+              <p className="evidence-standard-note">统计主体关系明确的独立查证组：正面证据须双侧引文定位并通过检定，针对明确来源完成的负面查证也计入；同题材、公共新闻事实与未定位引文不计。</p>
+              {positive.length === 0 && <p className="hint">当前没有达到正式准入标准的证据组，下方仍完整列出所有线索与负面查证。</p>}
               {(() => {
                 const bySource = new Map<string, any[]>();
                 for (const e of positive) {
@@ -828,6 +878,7 @@ function VerdictView(props: {
                       {evs.map((e) => (
           <div className="evidence-card" key={e.id} id={`ev-${e.id}`} style={{ marginBottom: 10 }}>
             <div className="evidence-head">
+              <span className="evidence-group-number">证据组 {String(positive.indexOf(e) + 1).padStart(2, '0')}</span>
               <span className={'evidence-level ' + e.level}>{e.plainTitle || plainLevelName(e.level)}</span>
               <span className="evidence-id">{e.level === 'E4' ? '错误被复制' : e.level === 'E3' ? '具体对应' : e.level === 'E2' ? '结构对应' : '查证记录'}</span>
               {(e.detail as any)?.demoted && <span className="hint" style={{ marginLeft: 8 }}>（线索级，不计入定案）</span>}
@@ -838,13 +889,13 @@ function VerdictView(props: {
                 {(e.detail as any)?.contextTarget && (
                   <div className="quote-box target" style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.9 }}>
                     <span className="quote-label">被检内容·上下文</span>
-                    <div className="palette-text" style={{ opacity: 0.92 }}><HighlightQuote text={(e.detail as any).contextTarget} phrase={(e.detail as any)?.hitPhraseTarget} /></div>
+                    <div className="palette-text" style={{ opacity: 0.92 }}><HighlightQuote text={stripMarkdownMedia((e.detail as any).contextTarget)} phrase={(e.detail as any)?.hitPhraseTarget} /></div>
                   </div>
                 )}
                 {(e.detail as any)?.contextSource && (
                   <div className="quote-box source" style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.9 }}>
                     <span className="quote-label">参照源文·上下文</span>
-                    <div className="palette-text" style={{ opacity: 0.92 }}><HighlightQuote text={(e.detail as any).contextSource} phrase={(e.detail as any)?.hitPhraseSource} /></div>
+                    <div className="palette-text" style={{ opacity: 0.92 }}><HighlightQuote text={stripMarkdownMedia((e.detail as any).contextSource)} phrase={(e.detail as any)?.hitPhraseSource} /></div>
                   </div>
                 )}
               </details>
@@ -858,7 +909,7 @@ function VerdictView(props: {
             {e.examVerdict && e.examVerdict !== 'expression_copy' && (
               <div className="hint" style={{ marginTop: 4 }}>本条性质：{plainExam(e.examVerdict)}</div>
             )}
-            <div style={{ fontSize: 13.5 }}>{e.description.replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m: string, ty: string) => `指纹（${plainFpType(ty)}）`).replace(/在 SRC(\d+) 命中/g, (_m: string, n: string) => `在候选源${n}中命中`).replace(/← SRC(\d+)/g, (_m: string, n: string) => `← 候选源${n}`)}</div>
+            <div style={{ fontSize: 13.5 }}>{stripMarkdownMedia(e.description).replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m: string, ty: string) => `指纹（${plainFpType(ty)}）`).replace(/在 SRC(\d+) 命中/g, (_m: string, n: string) => `在候选源${n}中命中`).replace(/← SRC(\d+)/g, (_m: string, n: string) => `← 候选源${n}`)}</div>
             {e.examNote && <div className="hint" style={{ marginTop: 4 }}>检定理由：{e.examNote}</div>}
             {(e.detail as any)?.macro && Array.isArray((e.detail as any).mappings) && ((e.detail as any).mappings).length > 0 && (
               <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.8, borderLeft: '2px solid var(--line, #ccc)', paddingLeft: 10 }}>
@@ -879,7 +930,7 @@ function VerdictView(props: {
             {Array.isArray((e.detail as any)?.alsoSources) && (e.detail as any).alsoSources.length > 1 && (
               <div className="hint" style={{ marginTop: 4 }}>
                 同一对应还见于：{(e.detail as any).alsoSources.filter((s: any) => s.sourceId !== e.sourceId).map((s: any, i: number) => (
-                  <span key={i}>{i > 0 ? '；' : ''}{s.sourceId?.replace('SRC', '源')}《{(s.sourceTitle || '').slice(0, 24)}》{s.examVerdict === 'expression_copy' ? '' : '（线索级）'}</span>
+                  <span key={i}>{i > 0 ? '；' : ''}<a href={s.sourceUrl} target="_blank" rel="noreferrer">{s.sourceId?.replace('SRC', '源')}《{(s.sourceTitle || '').slice(0, 32)}》↗</a>{s.examVerdict === 'expression_copy' ? '' : '（线索级）'}</span>
                 ))}
               </div>
             )}
@@ -888,14 +939,14 @@ function VerdictView(props: {
                 {e.targetQuote && (
                   <div className="quote-box target" style={{ margin: 0 }}>
                     <span className="quote-label">被检内容</span>
-                    <div className="palette-text"><HighlightQuote text={e.targetQuote} phrase={(e.detail as any)?.hitPhraseTarget} /></div>
+                    <div className="palette-text"><HighlightQuote text={stripMarkdownMedia(e.targetQuote)} phrase={(e.detail as any)?.hitPhraseTarget} /></div>
                     {e.targetQuoteLocated === false && <span className="unlocated">未定位</span>}
                   </div>
                 )}
                 {e.sourceQuote && (
                   <div className="quote-box source" style={{ margin: 0 }}>
                     <span className="quote-label">参照源文·{e.sourceTitle ? e.sourceTitle.slice(0, 20) : '候选'}</span>
-                    <div className="palette-text"><HighlightQuote text={e.sourceQuote} phrase={(e.detail as any)?.hitPhraseSource} /></div>
+                    <div className="palette-text"><HighlightQuote text={stripMarkdownMedia(e.sourceQuote)} phrase={(e.detail as any)?.hitPhraseSource} /></div>
                     {e.sourceQuoteLocated === false && <span className="unlocated">未定位</span>}
                   </div>
                 )}
@@ -917,10 +968,15 @@ function VerdictView(props: {
               })()}
               {negative.length > 0 && (
                 <>
-                  <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>已查证清单（{negative.length}）——查过但未发现对应</h3>
+                  <h3 className="evidence-section-title">辅助线索与负面查证（{negative.length}）</h3>
                   {negative.map((e: any) => (
-                    <div key={e.id} className="hint" style={{ marginBottom: 6, paddingLeft: 10, borderLeft: '2px solid var(--line, #ccc)' }}>
-                      {e.description}
+                    <div key={e.id} className="clue-card">
+                      <div className="clue-card-head">
+                        <strong>{e.plainTitle || e.kind}</strong>
+                        <span>{evidenceExclusionReason(e)}</span>
+                      </div>
+                      <p>{stripMarkdownMedia(e.description)}</p>
+                      {e.sourceTitle && <a href={e.sourceUrl} target="_blank" rel="noreferrer">核验《{e.sourceTitle}》↗</a>}
                     </div>
                   ))}
                 </>
@@ -944,23 +1000,49 @@ function VerdictView(props: {
           </>
         )}
 
+        {Array.isArray(doc.externalClaims) && doc.externalClaims.length > 0 && (
+          <section className="external-claims" aria-labelledby="external-claims-title">
+            <h3 id="external-claims-title">外界指控材料（{doc.externalClaims.length}）</h3>
+            <p className="evidence-standard-note">仅列与被检主体直接相关且符合报道体例的公开材料；不替代原文比对。</p>
+            {doc.externalClaims.map((claim, index) => (
+              <article key={`${claim.url}-${index}`}>
+                <a href={claim.url} target="_blank" rel="noreferrer">{claim.title} ↗</a>
+                {claim.snippet && <p>{claim.snippet}</p>}
+              </article>
+            ))}
+          </section>
+        )}
+
         {(doc as any).prosecution && (
           <div className="argument-grid" style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div className="argument-card prosecution" style={{ padding: 10, border: '1px solid rgba(107,143,113,.4)', borderRadius: 6, background: 'rgba(107,143,113,.06)' }}>
               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>公诉人立论</div>
               <div style={{ fontSize: 13, lineHeight: 1.8 }}>{(doc as any).prosecution.argument}</div>
-              {(doc as any).prosecution.charges?.slice(0, 3).map((c: any, i: number) => (
+              {(doc as any).prosecution.charges?.map((c: any, i: number) => (
                 <div key={i} className="hint" style={{ marginTop: 4 }}>· {c.charge}</div>
               ))}
             </div>
             <div className="argument-card defense" style={{ padding: 10, border: '1px solid rgba(176,122,30,.4)', borderRadius: 6, background: 'rgba(176,122,30,.06)' }}>
               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>辩护人驳斥</div>
               <div style={{ fontSize: 13, lineHeight: 1.8 }}>{(doc as any).defense?.overall || '（无）'}</div>
-              {(doc as any).defense?.attacks?.slice(0, 3).map((a: any, i: number) => (
+              {(doc as any).defense?.attacks?.map((a: any, i: number) => (
                 <div key={i} className="hint" style={{ marginTop: 4 }}>· {a.reason}</div>
               ))}
             </div>
           </div>
+        )}
+
+        {Array.isArray(doc.debateRounds) && doc.debateRounds.length > 0 && (
+          <details className="debate-record">
+            <summary>控辩轮次（{doc.debateRounds.length} 轮）</summary>
+            {doc.debateRounds.map((round) => (
+              <div className="debate-round" key={round.round}>
+                <strong>第 {round.round} 轮</strong>
+                <p><span>公诉人</span>{round.prosecution}</p>
+                <p><span>辩护人</span>{round.defense}</p>
+              </div>
+            ))}
+          </details>
         )}
 
         <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>法官意见</h3>
@@ -968,8 +1050,8 @@ function VerdictView(props: {
 
         <h3 style={{ fontFamily: 'var(--serif)', fontWeight: 900, margin: '16px 0 8px' }}>核查范围与局限</h3>
         <ul style={{ margin: 0, paddingLeft: 22, lineHeight: 1.9 }}>
-          {doc.limits.map((l, i) => (
-            <li key={i}>{l}</li>
+          {visibleLimits.map((l, i) => (
+            <li key={i}><LinkifiedText text={l} /></li>
           ))}
         </ul>
 
@@ -978,7 +1060,11 @@ function VerdictView(props: {
             <summary style={{ cursor: 'pointer', fontFamily: 'var(--serif)', fontWeight: 700 }}>庭审记录（{doc.caseFile.trialLog.length} 条）——各角色动作留痕</summary>
             <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.9, opacity: 0.85, maxHeight: 300, overflowY: 'auto' }}>
               {doc.caseFile.trialLog.map((l: any, i: number) => (
-                <div key={i}>[{String(l.at).replace('T', ' ').slice(11, 19)}] {roleZh(l.role)}：{l.action}{l.detail ? `——${l.detail}` : ''}</div>
+                <div className="trial-log-line" key={i}>
+                  <time>{formatLocalTime(l.at)}</time>
+                  <strong>{roleZh(l.role)}</strong>
+                  <span>{formatTrialAction(l.role, l.action)}</span>
+                </div>
               ))}
             </div>
           </details>
@@ -1005,7 +1091,7 @@ function VerdictView(props: {
 // 判例集
 // ---------------------------------------------------------------------------
 
-function Archive(): React.ReactElement {
+function Archive({ onOpen }: { onOpen: (doc: VerdictDoc) => void }): React.ReactElement {
   const [metas, setMetas] = useState<ReturnType<typeof import('../store/local').loadArchiveMetas>>([]);
   React.useEffect(() => {
     import('../store/local').then((m) => setMetas(m.loadArchiveMetas()));
@@ -1016,7 +1102,7 @@ function Archive(): React.ReactElement {
           <h2 className="panel-title">判例集</h2>
           <span className="status-chip">本机存档 · {metas.length} 件</span>
         </div>
-        <p className="page-intro">每次宣判后，案卷会保存在当前浏览器。你可以导出判决书，或删除不再需要的记录。</p>
+        <p className="page-intro">每次宣判后，案卷会保存在当前浏览器。你可以查看全卷、导出判决书，或删除不再需要的记录。</p>
         {metas.length === 0 ? (
           <div className="empty-docket">
             <span aria-hidden="true">○</span>
@@ -1031,7 +1117,7 @@ function Archive(): React.ReactElement {
                 <th>案号</th>
                 <th>标的</th>
                 <th>裁决</th>
-                <th>E4</th>
+                <th>错误照搬</th>
                 <th>时间</th>
                 <th></th>
               </tr>
@@ -1048,6 +1134,16 @@ function Archive(): React.ReactElement {
                   <td data-label="时间">{m.generatedAt.slice(0, 16).replace('T', ' ')}</td>
                   <td data-label="操作">
                     <div className="archive-actions">
+                    <button
+                      className="btn btn-ghost btn-compact"
+                      onClick={async () => {
+                        const mod = await import('../store/local');
+                        const d = mod.loadArchiveDoc(m.caseId);
+                        if (d) onOpen(d as VerdictDoc);
+                      }}
+                    >
+                      查看
+                    </button>
                     <button
                       className="btn btn-ghost btn-compact"
                       onClick={async () => {
@@ -1119,6 +1215,16 @@ function Settings(): React.ReactElement {
       return next;
     });
   };
+  const providerPresets = presetsForProvider(s.kind);
+  const selectedPreset = providerPresets.find((preset) => preset.model === s.model && preset.baseUrl === s.baseUrl);
+  const applyProvider = (kind: typeof s.kind) => {
+    const preset = defaultPresetForProvider(kind);
+    setS({ ...s, kind, model: preset.model, baseUrl: preset.baseUrl, searchModel: kind === 'glm' ? s.searchModel : '' });
+  };
+  const applyPreset = (presetId: string) => {
+    const preset = providerPresets.find((item) => item.id === presetId);
+    if (preset) setS({ ...s, model: preset.model, baseUrl: preset.baseUrl });
+  };
 
   const test = async () => {
     setTesting(true);
@@ -1132,8 +1238,8 @@ function Settings(): React.ReactElement {
         const { createDeepSeekProvider, createGeminiProvider } = await import('../providers/multi');
         let p;
         if (s.kind === 'glm') p = createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
-        else if (s.kind === 'deepseek') p = createDeepSeekProvider({ apiKey: s.apiKey, model: s.model || 'deepseek-chat' });
-        else if (s.kind === 'gemini') p = createGeminiProvider({ apiKey: s.apiKey, model: s.model || 'gemini-2.0-flash' });
+        else if (s.kind === 'deepseek') p = createDeepSeekProvider({ apiKey: s.apiKey, model: s.model || 'deepseek-v4-flash' });
+        else if (s.kind === 'gemini') p = createGeminiProvider({ apiKey: s.apiKey, model: s.model || 'gemini-3.7-flash' });
         else p = createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
         const r = await p.chat([{ role: 'user', content: '连通性自检：请回答"就绪"。' }], { maxTokens: 20 });
         lines.push(`① 主模型 ${r.model}：✅ 连通`);
@@ -1206,7 +1312,7 @@ function Settings(): React.ReactElement {
         <div className="settings-grid">
           <div className="field field-wide">
             <label>模型供应商</label>
-            <select value={s.kind} onChange={(e) => setS({ ...s, kind: e.target.value as any })}>
+            <select value={s.kind} onChange={(e) => applyProvider(e.target.value as typeof s.kind)}>
               <option value="glm">GLM（智谱 bigmodel，默认）</option>
               <option value="deepseek">DeepSeek</option>
               <option value="gemini">Google Gemini</option>
@@ -1214,6 +1320,17 @@ function Settings(): React.ReactElement {
             </select>
             <div className="desc settings-links">
               获取密钥：<a href="https://open.bigmodel.cn" target="_blank" rel="noreferrer">GLM ↗</a> · <a href="https://platform.deepseek.com" target="_blank" rel="noreferrer">DeepSeek ↗</a> · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio ↗</a>
+            </div>
+          </div>
+          <div className="field field-wide model-preset-field">
+            <label>推荐方案</label>
+            <select value={selectedPreset?.id || 'manual'} onChange={(e) => applyPreset(e.target.value)}>
+              {providerPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+              <option value="manual">手动配置</option>
+            </select>
+            <div className="model-preset-note">
+              <span>{selectedPreset?.note || '当前为手动配置；模型名称和接口地址均可继续修改。'}</span>
+              {selectedPreset && <a href={selectedPreset.docsUrl} target="_blank" rel="noreferrer">官方模型页 ↗</a>}
             </div>
           </div>
           <div className="field">
@@ -1225,8 +1342,8 @@ function Settings(): React.ReactElement {
             <input value={s.baseUrl} onChange={(e) => setS({ ...s, baseUrl: e.target.value })} />
           </div>
           <div className="field">
-            <label>主模型</label>
-            <input value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} />
+            <label>主模型名称（可手动修改）</label>
+            <input value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} spellCheck={false} />
           </div>
           {s.kind === 'glm' && (
             <div className="field">
@@ -1323,7 +1440,8 @@ function About(): React.ReactElement {
       </div>
 
       <h3>它如何工作</h3>
-      <p>模型参与案情画像、检索词生成、候选比对与判词撰写；程序继续检查来源质量、引文定位、证据降级和裁决阈值。最终裁决词由固定规则映射，漫画动效和声音只负责呈现，不改变证据。</p>
+      <p>模型参与案情画像、检索词生成、候选比对与判词撰写；程序继续检查主体关系、来源质量、引文定位、新闻公共事实降级和裁决阈值。漫画演出只负责呈现，不改变证据。</p>
+      <p>正面证据必须有双侧可定位引文并通过检定；针对明确候选源完成的负面查证也计入正式查证组。至少形成 {MIN_ADMISSIBLE_EVIDENCE_GROUPS} 个独立组，才进入倾向性裁决。同题材页面、公共新闻事实和未定位引文只列为线索。</p>
       <p>检索无法穷尽版权墙内、未数字化或尚未被索引的材料，因此「未发现」不等于「证明清白」。判决书会同时列出命中、未命中和核查局限，供你自行复核。</p>
 
       <h3>本庭核查什么</h3>
@@ -1372,9 +1490,10 @@ function About(): React.ReactElement {
 
       <h3>裁决怎么读</h3>
       <div className="ruling-grid">
-        <div className="ruling-card is-red"><strong>不卫生</strong><p>至少发现一处相同错误被照搬；或确认论证链同构，并有至少三处独立的罕见材料对应。</p></div>
-        <div className="ruling-card is-gold"><strong>可能不卫生</strong><p>已经出现具体对应、结构组合或多处直译线索，但现有证据仍不足以排除巧合。</p></div>
+        <div className="ruling-card is-red"><strong>不卫生</strong><p>正式证据达到立案门槛，并发现相同错误传播，或形成结构与多处罕见材料相互支撑的证据链。</p></div>
+        <div className="ruling-card is-gold"><strong>可能不卫生</strong><p>正式证据达到立案门槛且出现具体对应，但现有证据仍不足以排除巧合。</p></div>
         <div className="ruling-card is-green"><strong>可能卫生</strong><p>在本次可达来源和对质范围内没有发现达到阈值的来源依赖痕迹。</p></div>
+        <div className="ruling-card is-blue"><strong>不足立案</strong><p>存在可展示的线索，但正式证据不足 {MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组，不出具倾向性裁决。</p></div>
         <div className="ruling-card is-gray"><strong>休庭</strong><p>内容不可得，或多轮检索后仍没有可供对质的候选来源。</p></div>
       </div>
 

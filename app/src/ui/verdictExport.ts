@@ -1,162 +1,86 @@
-// 判决书导出：自包含单文件 HTML（纸质文书风：纯白底、衬线、可截图传播；样式内联）
-// CJK 排版规则：全角标点、无中文斜体、Noto SC 字体栈、line-height ≥ 1.7
+// 判决书导出：自包含单文件 HTML。采用正式文书体例，减少框线并防止长文本/URL 溢出。
 
 import type { VerdictDoc } from '../pipeline';
-import { EVIDENCE_LEVEL_INFO, plainLevelName } from '../court/evidence';
+import { MIN_ADMISSIBLE_EVIDENCE_GROUPS, evidenceExclusionReason, isAdmissibleEvidence, plainLevelName } from '../court/evidence';
+import { stripMarkdownMedia } from '../court/chromeStrip';
 
-function esc(s: string): string {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+function esc(value: unknown): string {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+const clean = (value: unknown) => stripMarkdownMedia(String(value ?? '')).trim();
+const safeHref = (value: unknown) => /^https?:\/\//i.test(String(value ?? '').trim()) ? esc(String(value).trim()) : '#';
+
+function linkify(value: unknown): string {
+  const text = clean(value).replace(/\bSRC(\d+)\b/gi, '候选源$1');
+  const re = /(https?:\/\/[^\s；，。]+)/g;
+  let last = 0;
+  let html = '';
+  for (const match of text.matchAll(re)) {
+    const index = match.index ?? 0;
+    html += esc(text.slice(last, index));
+    html += `<a href="${safeHref(match[0])}">打开原文 ↗</a>`;
+    last = index + match[0].length;
+  }
+  return html + esc(text.slice(last));
+}
+
+function localTime(value: unknown): string {
+  const date = new Date(String(value || ''));
+  return Number.isNaN(date.getTime()) ? esc(String(value || '').replace('T', ' ').slice(0, 19)) : esc(date.toLocaleString('zh-CN', { hour12: false }));
+}
+
+const roleZh = (role: string) => ({ clerk: '书记员', evidence_officer: '证据官', prosecutor: '公诉人', defender: '辩护人', judge: '法官', court_clerk: '法官助理', orchestrator: '审判长' } as Record<string, string>)[role] || role;
+
+function trialAction(action: string): string {
+  const chars = action.match(/共\s*(\d+)\s*字符/)?.[1];
+  if (/控方立论.*启动/.test(action)) return `开始整理控方证据${chars ? `（材料 ${chars} 字）` : ''}`;
+  if (/控方立论.*完成/.test(action)) return '控方证据整理完成';
+  if (/辩方驳斥.*启动/.test(action)) return `开始核对引用并提出抗辩${chars ? `（材料 ${chars} 字）` : ''}`;
+  if (/辩方驳斥.*完成/.test(action)) return '辩方抗辩完成';
+  if (/法官判词.*启动/.test(action)) return `开始复核控辩材料${chars ? `（材料 ${chars} 字）` : ''}`;
+  if (/法官判词.*完成/.test(action)) return '裁决意见整理完成';
+  return clean(action).replace(/\b(?:evidenceList|sourcesBrief|prosecutionBrief|citationMap|evidenceTop|citationNote|verdict)\b/gi, '材料').replace(/\b(?:EV|SRC|FP)\S*/g, '证据');
+}
+
+function overviewForExport(value: unknown, sources: number, admitted: number, total: number): string {
+  const cleaned = clean(value);
+  if (/(?:数据组合|证据)相似度|(?:相似度为?|similarity)\s*\d+\s*%/i.test(cleaned)) {
+    return `已完成 ${sources} 个候选源核查；${admitted} 组正式查证，${Math.max(0, total - admitted)} 条线索未准入。相似度仅用于检索排序，不代表证据强度。`;
+  }
+  return cleaned;
 }
 
 export function buildVerdictHtml(doc: VerdictDoc | any): string {
   const v = doc.verdict;
   const cf = doc.caseFile;
-  const color =
-    v.word === '不卫生' ? '#b0271a' : v.word === '可能不卫生' ? '#9a6b12' : v.word === '卫生' ? '#2f6b40' : '#57503f';
+  const admitted = (doc.evidence || []).filter((e: any) => isAdmissibleEvidence(e));
+  const required = doc.admission?.required ?? MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+  const displayWord = admitted.length < required && !['休庭', '不予受理'].includes(v.word) ? '不足立案' : v.word;
+  const displayRule = displayWord === '不足立案'
+    ? `正式证据仅 ${admitted.length} 组，未达到 ${required} 组立案门槛；现有内容仅作线索展示，不出具倾向性裁决`
+    : v.rule;
+  const overview = overviewForExport(doc.overview, (doc.sources || []).length, admitted.length, (doc.evidence || []).length);
+  const limits = (doc.limits || []).filter((item: string) => !/^\s*【外界指控】/.test(String(item)));
+  const color = displayWord === '不卫生' ? '#b0271a' : displayWord === '可能不卫生' ? '#986813' : displayWord === '可能卫生' || displayWord === '卫生' ? '#356b43' : displayWord === '不足立案' ? '#1749ae' : '#57503f';
 
-  // v2.2.1 代号白话化（与页面一致）
-  const plainFpTypeX = (ty?: string) =>
-    ({ weird_term: '异常用词', rare_case: '冷门案例', data_combo: '数据组合', analogy: '独特类比', joke: '专属玩笑', ordering: '罕见排序', other: '其他特征' } as Record<string, string>)[ty || ''] || ty || '';
-  const plainExamX = (v?: string) =>
-    ({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as Record<string, string>)[v || ''] || '';
-  const plainDesc = (d: string) => d
-    .replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m, ty) => `指纹（${plainFpTypeX(ty)}）`)
-    .replace(/在 SRC(\d+) 命中/g, (_m, n) => `在候选源${n}中命中`)
-    .replace(/← SRC(\d+)/g, (_m, n) => `← 候选源${n}`);
+  const sourceList = (doc.sources || []).map((s: any) => `<li><a href="${safeHref(s.url)}">${esc(clean(s.title) || '未命名来源')} ↗</a><span>${esc(s.subjectRelation === 'direct_source' ? '直接来源候选' : s.subjectRelation === 'same_event' ? '同一公共事件' : s.subjectRelation === 'same_topic' ? '同题材' : '关系待核')} · ${s.transcribed ? '全文转录比对' : s.partial ? '部分取证' : '页面正文比对'}</span></li>`).join('');
 
-  const evidenceRows = (doc.evidence || []).filter((e: any) => e.level !== 'E1')
-    .map(
-      (e: any) => `
-      <div class="ev">
-        <div class="ev-head"><span class="lv ${e.level}">${esc(e.plainTitle || plainLevelName(e.level))}</span><span class="ev-id">${e.level === 'E4' ? '错误被复制' : e.level === 'E3' ? '具体对应' : e.level === 'E2' ? '结构对应' : '查证记录'}</span>${e.examVerdict && e.examVerdict !== 'expression_copy' ? `<span class="ev-id">（${esc(plainExamX(e.examVerdict))}）</span>` : ''}</div>
-        ${(e.sourceParaphrase || e.targetParaphrase) ? `<div class="ev-desc" style="margin-bottom:6px">${esc(e.sourceParaphrase || '')}${e.sourceParaphrase && e.targetParaphrase ? '<br/>' : ''}${esc(e.targetParaphrase || '')}</div>` : ''}
-        ${e.detail?.contextTarget || e.detail?.contextSource ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12.5px;opacity:.85">展开上下文（前后各约 200 字${e.detail?.contextVerified ? '，已机械校验逐字真实' : ''}）</summary>${e.detail?.contextTarget ? `<div class="q" style="margin-top:6px;font-size:12.5px"><span class="ql">被检内容·上下文</span>${esc(e.detail.contextTarget)}</div>` : ''}${e.detail?.contextSource ? `<div class="q" style="margin-top:6px;font-size:12.5px"><span class="ql">参照源文·上下文</span>${esc(e.detail.contextSource)}</div>` : ''}</details>` : ''}
-        <div class="ev-desc">${esc(plainDesc(e.description))}</div>
-        ${e.examNote ? `<div class="cc">检定理由：${esc(e.examNote)}</div>` : ''}
-        ${e.detail?.macro && Array.isArray(e.detail.mappings) && e.detail.mappings.length ? `<div class="cc" style="padding-left:10px;border-left:2px solid #ccc"><b>大纲逐项对应（${e.detail.mappings.length} 项）：</b>${e.detail.mappings.map((m: any) => `<div>· 第${m.item ?? ''}项：${esc(m.note || '')}${m.sourceExcerpt ? `——源摘录：${esc(String(m.sourceExcerpt).slice(0, 100))}…` : ''}</div>`).join('')}</div>` : ''}
-        ${e.sourceTitle ? `<div class="cc">对比源：<a href="${esc(e.sourceUrl || '#')}">${esc(e.sourceTitle)}</a>${e.sourceTranscribed ? '（已转录全文比对）' : '（页面文本比对）'}</div>` : ''}
-        ${(e.targetQuote || e.sourceQuote) ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        ${e.targetQuote ? `<div class="q" style="margin:0"><span class="ql">被检内容</span>${esc(e.targetQuote)}${e.targetQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
-        ${e.sourceQuote ? `<div class="q" style="margin:0"><span class="ql">参照源文·${esc((e.sourceTitle || '候选').slice(0, 20))}</span>${esc(e.sourceQuote)}${e.sourceQuoteLocated === false ? '<span class="un">未定位</span>' : ''}</div>` : ''}
-        </div>` : ''}
-        ${(() => {
-          const cc = (doc.crossChecks || []).find((c: any) => c.evidenceId === e.id);
-          return cc ? `<div class="cc">独立复核：巧合风险「${esc(cc.risk)}」——${esc(cc.note)}</div>` : '';
-        })()}
-      </div>`,
-    )
-    .join('\n');
+  const evidenceList = (doc.evidence || []).map((e: any, index: number) => {
+    const accepted = isAdmissibleEvidence(e);
+    const contextTarget = clean(e.detail?.contextTarget);
+    const contextSource = clean(e.detail?.contextSource);
+    const alsoSources = Array.isArray(e.detail?.alsoSources) ? e.detail.alsoSources : [];
+    return `<article class="evidence ${accepted ? 'admitted' : 'clue'}"><header><span class="ordinal">${accepted ? '正式查证组' : '辅助线索'} ${String(index + 1).padStart(2, '0')}</span><strong>${esc(e.plainTitle || e.kind || plainLevelName(e.level))}</strong><span class="nature">${accepted ? (e.level === 'E1' ? '负面查证' : plainLevelName(e.level)) : esc(evidenceExclusionReason(e) || '线索级')}</span></header><p class="description">${esc(clean(e.description))}</p>${e.examNote ? `<p class="review"><b>检定理由：</b>${esc(clean(e.examNote))}</p>` : ''}${e.sourceTitle ? `<p class="source-ref"><b>主要对比源：</b><a href="${safeHref(e.sourceUrl)}">${esc(clean(e.sourceTitle))} ↗</a>${e.sourceTranscribed ? '（全文转录比对）' : '（页面文本比对）'}</p>` : ''}${alsoSources.length > 1 ? `<div class="also"><b>同一对应的其他来源：</b>${alsoSources.filter((s: any) => s.sourceId !== e.sourceId).map((s: any) => `<a href="${safeHref(s.sourceUrl)}">${esc(clean(s.sourceTitle) || s.sourceId)} ↗</a>`).join('；')}</div>` : ''}${(e.targetQuote || e.sourceQuote) ? `<div class="quote-grid">${e.targetQuote ? `<blockquote><b>被检内容</b>${esc(clean(e.targetQuote))}${e.targetQuoteLocated === false ? '<em>未定位</em>' : ''}</blockquote>` : ''}${e.sourceQuote ? `<blockquote><b>参照源文</b>${esc(clean(e.sourceQuote))}${e.sourceQuoteLocated === false ? '<em>未定位</em>' : ''}</blockquote>` : ''}</div>` : ''}${(contextTarget || contextSource) ? `<div class="context"><b>核验上下文${e.detail?.contextVerified ? '（机械定位通过）' : ''}</b>${contextTarget ? `<p><span>被检内容</span>${esc(contextTarget)}</p>` : ''}${contextSource ? `<p><span>参照源文</span>${esc(contextSource)}</p>` : ''}</div>` : ''}</article>`;
+  }).join('');
 
-  const sourcesRows = (doc.sources || [])
-    .map(
-      (s: any) =>
-        `<tr><td>${esc(s.id)}</td><td>${esc(s.title)}${s.partial ? '（部分取证）' : ''}</td><td><a href="${esc(s.url)}">${esc(s.url.length > 60 ? s.url.slice(0, 57) + '…' : s.url)}</a></td><td>${esc(s.date || '—')}</td></tr>`,
-    )
-    .join('\n');
+  const claims = (doc.externalClaims || []).map((claim: any) => `<li><a href="${safeHref(claim.url)}">${esc(clean(claim.title))} ↗</a>${claim.snippet ? `<p>${esc(clean(claim.snippet))}</p>` : ''}</li>`).join('');
+  const debate = (doc.debateRounds || []).map((round: any) => `<section class="debate-round"><b>第 ${esc(round.round)} 轮</b><p><span>公诉人</span>${esc(clean(round.prosecution))}</p><p><span>辩护人</span>${esc(clean(round.defense))}</p></section>`).join('');
+  const trialLog = (cf.trialLog || []).map((entry: any) => `<li><time>${localTime(entry.at)}</time><b>${esc(roleZh(entry.role))}</b><span>${esc(trialAction(String(entry.action || '')))}</span></li>`).join('');
 
-  const leadsRows = (cf.leads || [])
-    .map(
-      (l: any) =>
-        `<div class="q"><span class="ql">${esc(l.id)} · ${l.kind === 'explicit_source_doubt' ? '来源怀疑' : l.kind === 'weird_term_confusion' ? '陌生说法困惑' : '其他可疑'}</span>${esc(l.quote)}<div class="cc">${esc(l.note)}（线报只作检索线索，不参与判级）</div></div>`,
-    )
-    .join('\n');
-
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>判决书 ${esc(cf.caseId)} · 卫生法庭</title>
-<style>
-  :root { --ink:#1c1a17; --soft:#57503f; --line:#d8d2c2; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:#fff; color:var(--ink); font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif; line-height:1.8; }
-  .doc { max-width: 860px; margin: 0 auto; padding: 48px 40px 60px; }
-  h1,h2,h3 { font-family:'Noto Serif SC','Songti SC','SimSun',serif; }
-  .head { text-align:center; border-bottom:3px double var(--ink); padding-bottom:18px; margin-bottom:26px; }
-  .head h1 { font-size:26px; margin:0 0 6px; letter-spacing:.2em; }
-  .head .sub { font-size:13px; color:var(--soft); }
-  .head .fn { font-size:12px; color:var(--soft); margin-top:10px; }
-  .verdict-hero { text-align:center; margin: 30px 0 26px; }
-  .verdict-word { font-size:54px; font-weight:900; color:${color}; letter-spacing:.18em; font-family:'Noto Serif SC',serif; margin:0; }
-  .verdict-rule { font-size:14px; color:var(--soft); max-width:620px; margin:8px auto 0; }
-  .stamp { display:inline-block; border:4px double ${color}; color:${color}; padding:4px 18px; font-size:16px; letter-spacing:.3em; transform:rotate(-6deg); margin-top:12px; font-weight:900; font-family:'Noto Serif SC',serif; }
-  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:12px 0 20px; }
-  th,td { border:1.5px solid var(--ink); padding:7px 9px; text-align:left; vertical-align:top; }
-  th { background:#f5f1e6; letter-spacing:.06em; }
-  h2.sec { font-size:19px; margin:30px 0 10px; border-left:6px solid ${color}; padding-left:10px; }
-  .ev { border:1.5px solid var(--ink); padding:12px 14px; margin-bottom:12px; page-break-inside:avoid; }
-  .ev-head { display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap; }
-  .lv { font-weight:900; font-size:12px; border:2px solid var(--ink); padding:1px 8px; letter-spacing:.08em; }
-  .lv.E4 { background:#d93a2b; color:#fff; } .lv.E3 { background:#e8b93e; } .lv.E2 { background:#cfe3d4; } .lv.E1,.lv.E5 { background:#e8e4d8; }
-  .ev-id { font-size:12px; color:var(--soft); font-weight:700; }
-  .ev-desc { font-size:13.5px; margin-bottom:6px; }
-  .q { background:#f8f5ec; border:1.5px solid var(--line); padding:8px 11px; font-size:13px; margin-top:6px; }
-  .ql { display:block; font-size:11.5px; font-weight:900; letter-spacing:.2em; color:var(--soft); margin-bottom:2px; }
-  .un { display:inline-block; font-size:11px; font-weight:700; color:#b0271a; border:1.5px solid #b0271a; padding:0 5px; margin-left:6px; }
-  .cc { font-size:12.5px; color:var(--soft); margin-top:5px; }
-  .limits li { margin-bottom:3px; font-size:13.5px; }
-  .disclaimer { border:2px dashed var(--soft); background:#f8f5ec; padding:12px 16px; font-size:12.5px; color:var(--soft); margin-top:28px; line-height:1.85; }
-  a { color:#2b5cad; word-break:break-all; }
-  .foot { text-align:center; font-size:12px; color:var(--soft); margin-top:34px; border-top:1.5px solid var(--line); padding-top:12px; }
-</style>
-</head>
-<body>
-<div class="doc">
-  <div class="head">
-    <h1>卫生法庭判决书</h1>
-    <div class="sub">案号 ${esc(cf.caseId)} · 宣判于 ${esc(String(doc.generatedAt).replace('T', ' ').slice(0, 19))}</div>
-    <div class="fn">*「卫生法庭」应作「卫生服务队」（health corps）——本庭之名源自一次被复制的机器转录错误。</div>
-  </div>
-
-  <table>
-    <tr><th style="width:96px">标的</th><td>${esc(cf.target.title)}</td></tr>
-    <tr><th>来源页</th><td>${cf.target.url ? `<a href="${esc(cf.target.url)}">${esc(cf.target.url)}</a>` : '（粘贴文本）'}</td></tr>
-    <tr><th>取证时间</th><td>${esc(String(cf.target.fetchedAt || '').replace('T',' ').slice(0,19)) || '—'}</td></tr>
-    <tr><th>案情摘要</th><td>${esc(cf.profile?.summaryZh || '—')}</td></tr>
-    <tr><th>来源标注</th><td>${esc(v.attribution)}${cf.attributionNote ? '：' + esc(cf.attributionNote) : ''}</td></tr>
-    <tr><th>证据构成</th><td>错误照搬×${v.counts.E4} · 罕见材料×${v.counts.E3} · 论证链同构${v.counts.E2 ? '√' : '—'} · 句式直译×${v.counts.E5}</td></tr>
-  </table>
-
-  <div class="verdict-hero">
-    <p class="verdict-word ${esc(v.word)}">${esc(v.word)}</p>
-    ${v.word === '可能卫生' ? '<div style="font-size:12px;opacity:.75;margin-top:4px">请持续关注精神卫生。</div>' : ''}
-    <div class="stamp">卫生法庭 · 宣判</div>
-    <p class="verdict-rule">${esc(v.rule)}</p>
-  </div>
-
-  ${doc.sources?.length ? `<h2 class="sec">候选源清单</h2>
-  <table>
-    <tr><th>ID</th><th>标题</th><th>URL</th><th>日期</th></tr>
-    ${sourcesRows}
-  </table>` : ''}
-
-  <h2 class="sec">证据清单（${(doc.evidence || []).filter((e: any) => e.level !== 'E1').length}）</h2>
-  ${(doc.evidence || []).filter((e: any) => e.level !== 'E1').length ? evidenceRows : '<p>本案无命中证据——见下方已查证清单。</p>'}
-  ${(doc.evidence || []).filter((e: any) => e.level === 'E1').length ? `<h2 class="sec">已查证清单（${(doc.evidence || []).filter((e: any) => e.level === 'E1').length}）——查过但未发现对应</h2>${(doc.evidence || []).filter((e: any) => e.level === 'E1').map((e: any) => `<div class="ev" style="opacity:.75"><div class="ev-desc">${esc(e.description)}</div></div>`).join('\n')}` : ''}
-
-  ${leadsRows ? `<h2 class="sec">群众线报（${cf.leads.length}）</h2>${leadsRows}` : ''}
-
-  <h2 class="sec">法官意见</h2>
-  <p style="font-size:14px">${esc(doc.opinion)}</p>
-
-  <h2 class="sec">核查范围与局限</h2>
-  <ul class="limits">
-    ${(doc.limits || []).map((l: string) => `<li>${esc(l)}</li>`).join('\n')}
-  </ul>
-
-  <div class="disclaimer">${esc(doc.disclaimer)}</div>
-
-  <div class="foot">
-    卫生法庭 HEALTH COURT* · 机制严谨 × 呈现漫画 · 由用户浏览器本地生成 · ${esc(cf.caseId)}
-  </div>
-</div>
-</body>
-</html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>判决书 ${esc(cf.caseId)} · 卫生法庭</title><style>
+:root{--ink:#1b1a18;--soft:#625d54;--line:#d9d3c6;--paper:#fbfaf6;--accent:${color}}*{box-sizing:border-box;min-width:0}html{background:#eeeae1}body{margin:0;color:var(--ink);font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;line-height:1.82;overflow-wrap:anywhere}a{color:#1749ae;text-decoration-thickness:1px;text-underline-offset:2px;overflow-wrap:anywhere}.doc{width:min(920px,calc(100% - 32px));margin:24px auto;background:#fff;padding:54px 58px 64px;box-shadow:0 14px 42px rgba(30,26,20,.1)}h1,h2,h3,.verdict-word{font-family:'Noto Serif SC','Songti SC',SimSun,serif}.masthead{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end;padding-bottom:20px;border-bottom:2px solid var(--ink)}.masthead h1{margin:0;font-size:30px;letter-spacing:.16em}.masthead p{margin:7px 0 0;color:var(--soft);font:700 13px/1.7 'Noto Serif SC',serif}.case-id{font-size:12px;color:var(--soft);font-variant-numeric:tabular-nums;text-align:right}.meta{margin:24px 0 0}.meta div{display:grid;grid-template-columns:104px minmax(0,1fr);gap:18px;padding:9px 0;border-bottom:1px solid var(--line)}.meta dt{font-weight:800}.meta dd{margin:0}.verdict{text-align:center;padding:40px 0 32px}.verdict-word{margin:0;color:var(--accent);font-size:56px;font-weight:900;letter-spacing:.12em}.verdict-rule{max-width:680px;margin:12px auto 0;color:var(--soft)}.admission{display:inline-grid;grid-template-columns:auto auto;gap:2px 12px;margin-top:18px;padding:10px 18px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.admission b{color:var(--accent);font-size:18px}.admission small{grid-column:1/-1;color:var(--soft)}h2{margin:34px 0 12px;padding-top:8px;border-top:2px solid var(--ink);font-size:20px;letter-spacing:.06em}.overview{margin:14px 0 20px;padding:12px 15px;background:var(--paper);border-left:4px solid var(--accent)}.source-list{padding-left:22px}.source-list li{margin:8px 0}.source-list span{display:block;color:var(--soft);font-size:12px}.evidence{position:relative;margin:0 0 18px;padding:16px 18px 17px;background:var(--paper);border-left:4px solid var(--accent);break-inside:avoid}.evidence.clue{border-left-color:#9d978b;background:#fcfbf8}.evidence header{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:8px}.ordinal{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--soft)}.nature{font-size:11px;color:var(--soft)}.description,.review,.source-ref{margin:6px 0}.review,.source-ref,.also{font-size:12.5px;color:var(--soft)}.quote-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-top:12px}.quote-grid blockquote{margin:0;padding:11px 13px;background:#fff;border:1px solid var(--line);white-space:pre-wrap;font-size:12.5px}.quote-grid b,.context>b{display:block;margin-bottom:5px;font-size:11px;letter-spacing:.1em}.quote-grid em{display:inline-block;margin-left:6px;color:#b0271a;font-style:normal}.context{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);font-size:12px;color:var(--soft)}.context p{margin:6px 0;white-space:pre-wrap}.context span{font-weight:800;margin-right:8px;color:var(--ink)}.claims,.limits{padding-left:22px}.claims li,.limits li{margin:7px 0}.claims p{margin:3px 0;color:var(--soft);font-size:12.5px}.debate-round{padding:12px 14px;margin:8px 0;background:var(--paper);break-inside:avoid}.debate-round p{display:grid;grid-template-columns:66px minmax(0,1fr);gap:8px;margin:7px 0}.debate-round span{font-weight:800}.trial-log{list-style:none;padding:0}.trial-log li{display:grid;grid-template-columns:154px 76px minmax(0,1fr);gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px}.trial-log time{font-variant-numeric:tabular-nums;color:var(--soft)}.disclaimer{margin-top:34px;padding:14px 16px;background:var(--paper);border-top:1px solid var(--ink);font-size:12px;color:var(--soft)}.footer{margin-top:28px;text-align:center;color:var(--soft);font-size:11px;letter-spacing:.08em}@media(max-width:640px){.doc{width:100%;margin:0;padding:32px 20px 42px;box-shadow:none}.masthead{grid-template-columns:1fr}.case-id{text-align:left}.meta div{grid-template-columns:82px minmax(0,1fr)}.verdict-word{font-size:42px}.quote-grid{grid-template-columns:1fr}.trial-log li{grid-template-columns:82px 58px minmax(0,1fr)}.debate-round p{grid-template-columns:58px minmax(0,1fr)}}@page{margin:18mm}@media print{html{background:#fff}.doc{width:auto;margin:0;padding:0;box-shadow:none}a{color:inherit}.evidence{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+</style></head><body><main class="doc"><header class="masthead"><div><h1>卫生法庭判决书</h1><p>适度创作益脑，沉迷AI伤身。拒绝循环文本，守护精神卫生。</p></div><div class="case-id">案号 ${esc(cf.caseId)}<br>生成 ${localTime(doc.generatedAt)}</div></header><dl class="meta"><div><dt>核查标的</dt><dd>${esc(clean(cf.target.title))}</dd></div><div><dt>来源页</dt><dd>${cf.target.url ? `<a href="${safeHref(cf.target.url)}">打开被检页面 ↗</a>` : '粘贴文本'}</dd></div><div><dt>案情摘要</dt><dd>${esc(clean(cf.profile?.summaryZh) || '—')}</dd></div><div><dt>来源标注</dt><dd>${esc(v.attribution)}</dd></div></dl><section class="verdict"><p class="verdict-word">${esc(displayWord)}</p><p class="verdict-rule">${esc(clean(displayRule))}</p><div class="admission"><span>正式查证</span><b>${admitted.length} / ${required} 组</b><small>${admitted.length >= required ? '达到立案门槛' : '不足立案，仅展示线索'}</small></div></section>${overview ? `<div class="overview"><b>总体对应形态｜</b>${esc(overview)}</div>` : ''}${sourceList ? `<h2>候选来源</h2><ol class="source-list">${sourceList}</ol>` : ''}<h2>证据与线索（${(doc.evidence || []).length}）</h2>${evidenceList || '<p>本案没有可展示的查证记录。</p>'}${claims ? `<h2>外界指控材料</h2><p>仅列与被检主体直接相关且符合报道体例的公开材料；不替代原文比对。</p><ol class="claims">${claims}</ol>` : ''}${debate ? `<h2>控辩记录</h2>${debate}` : ''}<h2>法官意见</h2><p>${esc(clean(doc.opinion))}</p><h2>核查范围与局限</h2><ul class="limits">${limits.map((item: string) => `<li>${linkify(item)}</li>`).join('')}</ul>${trialLog ? `<h2>庭审记录</h2><ol class="trial-log">${trialLog}</ol>` : ''}<div class="disclaimer">${esc(clean(doc.disclaimer))}</div><footer class="footer">卫生法庭 · 文本来源核查 · ${esc(cf.caseId)}</footer></main></body></html>`;
 }
 
 export function downloadVerdictHtml(doc: VerdictDoc | any) {

@@ -1,6 +1,14 @@
 import { cjkPunctNormalize } from '../src/court/textUtils';
 import { describe, it, expect } from 'vitest';
-import { mapVerdict, EVIDENCE_LEVEL_INFO, DISCLAIMER } from '../src/court/evidence';
+import {
+  mapVerdict,
+  EVIDENCE_LEVEL_INFO,
+  DISCLAIMER,
+  MIN_ADMISSIBLE_EVIDENCE_GROUPS,
+  isAdmissibleEvidence,
+  looksLikeSharedNewsFact,
+  isFormalControversyReport,
+} from '../src/court/evidence';
 import { locateQuote, locateExact, normalize, similarity, segment, truncateSmart, parseJinaMarkdown } from '../src/court/textUtils';
 
 describe('裁决映射（PRD §4.2 阈值）', () => {
@@ -46,6 +54,28 @@ describe('裁决映射（PRD §4.2 阈值）', () => {
   });
   it('E3≥3 但无 E2 → 可能不卫生（措辞保持克制）', () => {
     expect(mapVerdict({ ...base, e3: 4, e3DistinctFingerprints: 4 }, 'none', usable, true).word).toBe('可能不卫生');
+  });
+  it('正式证据不足 3 组时不出具倾向性裁决', () => {
+    expect(MIN_ADMISSIBLE_EVIDENCE_GROUPS).toBe(3);
+    expect(mapVerdict({ ...base, e3: 2, e3DistinctFingerprints: 2 }, 'none', usable, true, 2).word).toBe('不足立案');
+  });
+});
+
+describe('S60HBY 证据可信度回归', () => {
+  it('针对明确候选源的负面查证计一组，同题线索不计', () => {
+    expect(isAdmissibleEvidence({ id: 'NEG1', level: 'E1', kind: 'negative', description: '已查证无对应', sourceId: 'SRC2', detail: { negative: true } })).toBe(true);
+    expect(isAdmissibleEvidence({ id: 'TOPIC1', level: 'E1', kind: 'topic', description: '仅主题相同' })).toBe(false);
+  });
+  it('多家媒体共有的日期+官方事件要素识别为新闻公共事实', () => {
+    const newsItem = { id: 'FP1', level: 'E3' as const, kind: 'data_combo', description: '2026年5月25日教皇发布人工智能通谕', targetQuote: '2026年5月25日发布名为《》的通谕', sourceQuote: '教皇于2026年5月25日发布通谕', targetQuoteLocated: true, sourceQuoteLocated: true, detail: { fingerprintType: 'data_combo', alsoSources: [{}, {}, {}, {}, {}, {}] } };
+    expect(looksLikeSharedNewsFact(newsItem, 6)).toBe(true);
+    expect(isAdmissibleEvidence(newsItem)).toBe(false);
+  });
+  it('R6 拒绝 Reddit 问答和同题碎片，只接收与作品直接相关的指控报道', () => {
+    const target = { title: '355-教皇如何因人工智能撕裂美国右翼？', author: '独树不成林' };
+    expect(isFormalControversyReport({ title: '为什么新教皇抄用旧名字？', url: 'https://www.reddit.com/r/AskHistorians/x' }, target)).toBe(false);
+    expect(isFormalControversyReport({ title: '教皇新通谕的建筑限额', url: 'https://example.com/quota' }, target)).toBe(false);
+    expect(isFormalControversyReport({ title: '《教皇如何因人工智能撕裂美国右翼》被指洗稿', url: 'https://news.example.com/report' }, target)).toBe(true);
   });
 });
 

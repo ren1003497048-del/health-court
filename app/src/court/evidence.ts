@@ -12,7 +12,10 @@ export const EVIDENCE_LEVEL_INFO: Record<EvidenceLevel, { name: string; desc: st
   E5: { name: '翻译腔/措辞', desc: '中文表述是外文原句的直译腔（中，需多例）' },
 };
 
-export type VerdictWord = '不卫生' | '可能不卫生' | '可能卫生' | '卫生' | '休庭' | '不予受理';
+export type VerdictWord = '不卫生' | '可能不卫生' | '可能卫生' | '卫生' | '休庭' | '不予受理' | '不足立案';
+
+/** 正式出具倾向性裁决所需的最少独立证据组数。 */
+export const MIN_ADMISSIBLE_EVIDENCE_GROUPS = 3;
 
 /**
  * 白话判据表（2026-08-19 用户拍板）：
@@ -92,6 +95,67 @@ export interface EvidenceItem {
   detail?: Record<string, unknown>;
 }
 
+/**
+ * 正式证据准入理由。返回 null 表示可以计入立案门槛；否则只作为线索展示。
+ * 主题相同、新闻公共事实、未定位引文和已降级检定均不得撑高证据组数。
+ */
+export function evidenceExclusionReason(e: EvidenceItem): string | null {
+  if (e.level === 'E1') {
+    return e.sourceId && (e.detail as any)?.negative ? null : '仅属主题线索，未完成针对具体来源的负面查证';
+  }
+  if ((e.detail as any)?.demoted) return '复核后已降为线索级';
+  const groupedSourceCount = Array.isArray((e.detail as any)?.alsoSources)
+    ? (e.detail as any).alsoSources.length
+    : Number((e.detail as any)?.independentSourceCount || 0);
+  if (looksLikeSharedNewsFact(e, groupedSourceCount)) return '属于多家媒体共有的近期新闻基本事实';
+  const relation = (e.detail as any)?.subjectRelation;
+  if (relation === 'same_topic' || relation === 'unrelated') return '候选源与被检主体仅同题或无直接关系';
+  if ((e.level === 'E3' || e.level === 'E4') && (!e.targetQuote || !e.sourceQuote)) return '缺少可复核的双侧原文引文';
+  if (e.targetQuoteLocated === false || e.sourceQuoteLocated === false) return '原文引文未通过定位校验';
+  if ((e.level === 'E2' || e.level === 'E3') && e.examVerdict && e.examVerdict !== 'expression_copy') {
+    return e.examVerdict === 'fact_relay' ? '属于公共事实转述' : '未确认独特表达对应';
+  }
+  return null;
+}
+
+export function isAdmissibleEvidence(e: EvidenceItem): boolean {
+  return evidenceExclusionReason(e) === null;
+}
+
+export function countAdmissibleEvidenceGroups(evidence: EvidenceItem[]): number {
+  return evidence.filter(isAdmissibleEvidence).length;
+}
+
+/** 多家媒体同步报道同一近期事件时，日期、人名、事件名和官方文件名属于公共新闻事实。 */
+export function looksLikeSharedNewsFact(e: EvidenceItem, independentSourceCount: number): boolean {
+  if (independentSourceCount < 3 || e.level !== 'E3') return false;
+  const type = String((e.detail as any)?.fingerprintType || (e.detail as any)?.overlapType || '');
+  if (!/data_combo|rare_case/.test(type) || (e.detail as any)?.transcriptionError) return false;
+  const q = `${e.targetQuote || ''} ${e.description || ''}`;
+  const hasDate = /(?:20\d{2}[年\-/]\d{1,2}(?:[月\-/]\d{1,2})?|\d{1,2}月\d{1,2}日)/.test(q);
+  const hasEvent = /发布|发表|宣布|通谕|声明|法案|选举|就职|记者会|峰会|官方|报告/.test(q);
+  return hasDate && hasEvent;
+}
+
+/** R6 只接收与目标作品/作者直接相关的正式指控报道，评论、问答和同题碎片不入栏。 */
+export function isFormalControversyReport(
+  candidate: { title?: string; snippet?: string; url?: string },
+  target: { title?: string; author?: string },
+): boolean {
+  const title = String(candidate.title || '');
+  const snippet = String(candidate.snippet || '');
+  const haystack = `${title} ${snippet}`;
+  if (/reddit\.com|askhistorians|zhihu\.com\/question|quora\.com/i.test(String(candidate.url || ''))) return false;
+  if (!/抄袭|洗稿|剽窃|被指|指控|侵权|争议|举报|plagiarism|plagiar|accused|alleged/i.test(haystack)) return false;
+  const work = String(target.title || '').replace(/^\s*\d{1,5}\s*[-—－:]\s*/, '').replace(/[《》“”"'「」【】\s]/g, '');
+  const author = String(target.author || '').replace(/\s/g, '');
+  const anchors = [work, author]
+    .filter((x) => x.length >= 4)
+    .flatMap((x) => [x, x.slice(0, Math.min(8, x.length))])
+    .filter((x) => x.length >= 4);
+  return anchors.some((anchor) => haystack.replace(/\s/g, '').includes(anchor));
+}
+
 export interface FingerprintHitStats {
   e4: number;
   e3: number;
@@ -110,6 +174,7 @@ export function mapVerdict(
   attribution: 'complete' | 'partial' | 'none' | 'unknown',
   contentUsable: boolean,
   hadCandidates: boolean,
+  admissibleGroups?: number,
 ): VerdictResult {
   const counts: Record<EvidenceLevel, number> = {
     E1: stats.e1 ? 1 : 0,
@@ -123,6 +188,24 @@ export function mapVerdict(
     return {
       word: '休庭',
       rule: '内容不可得或不足以完成核查（取证降级链走尽）',
+      counts,
+      attribution,
+    };
+  }
+
+  if (!hadCandidates) {
+    return {
+      word: '休庭',
+      rule: '多轮检索后未获得可对质的候选来源；未发现 ≠ 清白，可补充线索后再次开庭',
+      counts,
+      attribution,
+    };
+  }
+
+  if (admissibleGroups !== undefined && admissibleGroups < MIN_ADMISSIBLE_EVIDENCE_GROUPS) {
+    return {
+      word: '不足立案',
+      rule: `正式证据仅 ${admissibleGroups} 组，未达到 ${MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组立案门槛；现有内容仅作线索展示，不出具倾向性裁决`,
       counts,
       attribution,
     };
@@ -159,15 +242,6 @@ export function mapVerdict(
           : stats.e3DistinctFingerprints >= 1
             ? `罕见材料 ${stats.e3DistinctFingerprints} 处对应${stats.e1 && stats.e2 ? '，且整体结构相似' : ''}——现有证据不足以排除巧合`
             : '主题与结构相似 / 句式直译多例——现有证据不足以排除巧合',
-      counts,
-      attribution,
-    };
-  }
-
-  if (!hadCandidates) {
-    return {
-      word: '休庭',
-      rule: '多轮检索后未获得可对质的候选来源；未发现 ≠ 清白，可补充线索后再次开庭',
       counts,
       attribution,
     };

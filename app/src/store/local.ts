@@ -1,5 +1,7 @@
 // 设置与档案的 localStorage 存储（Key 只存用户浏览器，见 PRD §9）
 
+import { MIN_ADMISSIBLE_EVIDENCE_GROUPS, isAdmissibleEvidence } from '../court/evidence';
+
 export interface ProviderSettings {
   kind: 'glm' | 'openai-compat' | 'deepseek' | 'gemini';
   apiKey: string;
@@ -16,11 +18,45 @@ export interface ProviderSettings {
   groqApiKey: string;
 }
 
+export interface ModelPreset {
+  id: string;
+  kind: ProviderSettings['kind'];
+  model: string;
+  baseUrl: string;
+  label: string;
+  note: string;
+  docsUrl: string;
+}
+
+/**
+ * 主模型快捷方案（按 2026-08 官方模型页核对）。
+ * 只提供可编辑预设，不替用户承诺免费额度、速率或账户可用性。
+ */
+export const MODEL_PRESETS: ModelPreset[] = [
+  { id: 'glm-5.2', kind: 'glm', model: 'glm-5.2', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-5.2｜推荐·1M 长文本', note: '旗舰语义理解与长程任务，适合完整节目和多源材料。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2' },
+  { id: 'glm-4.7', kind: 'glm', model: 'glm-4.7', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-4.7｜稳健·200K', note: '通用分析与推理较均衡。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' },
+  { id: 'glm-4.7-flashx', kind: 'glm', model: 'glm-4.7-flashx', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-4.7-FlashX｜轻量·200K', note: '更适合高频试跑，仍需以账户实际权限为准。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' },
+  { id: 'deepseek-v4-flash', kind: 'deepseek', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', label: 'DeepSeek V4 Flash｜推荐·1M', note: '长上下文与吞吐优先，适合多轮证据整理。', docsUrl: 'https://api-docs.deepseek.com/quick_start/pricing/' },
+  { id: 'deepseek-v4-pro', kind: 'deepseek', model: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com', label: 'DeepSeek V4 Pro｜深度分析·1M', note: '复杂语义与抗辩优先，成本和可用额度以账户为准。', docsUrl: 'https://api-docs.deepseek.com/quick_start/pricing/' },
+  { id: 'gemini-3.7-flash', kind: 'gemini', model: 'gemini-3.7-flash', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', label: 'Gemini 3.7 Flash｜推荐·稳定版', note: '长文本、结构化输出和多步骤分析兼顾。', docsUrl: 'https://ai.google.dev/gemini-api/docs/models' },
+  { id: 'gemini-3.1-pro-preview', kind: 'gemini', model: 'gemini-3.1-pro-preview', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', label: 'Gemini 3.1 Pro｜高理解·预览版', note: '复杂推理优先；预览模型可能调整或下线。', docsUrl: 'https://ai.google.dev/gemini-api/docs/models' },
+  { id: 'gpt-5.1', kind: 'openai-compat', model: 'gpt-5.1', baseUrl: 'https://api.openai.com/v1', label: 'OpenAI GPT-5.1｜高理解', note: '适合复杂判断；需 OpenAI API 权限。', docsUrl: 'https://platform.openai.com/docs/models' },
+  { id: 'gpt-5-mini', kind: 'openai-compat', model: 'gpt-5-mini', baseUrl: 'https://api.openai.com/v1', label: 'OpenAI GPT-5 mini｜高频试跑', note: '速度和成本更平衡，也可改成任意兼容端点模型。', docsUrl: 'https://platform.openai.com/docs/models' },
+];
+
+export function presetsForProvider(kind: ProviderSettings['kind']): ModelPreset[] {
+  return MODEL_PRESETS.filter((preset) => preset.kind === kind);
+}
+
+export function defaultPresetForProvider(kind: ProviderSettings['kind']): ModelPreset {
+  return presetsForProvider(kind)[0];
+}
+
 export const DEFAULT_SETTINGS: ProviderSettings = {
   kind: 'glm',
   apiKey: '',
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-  model: 'glm-4-flash',
+  model: 'glm-5.2',
   searchModel: '',
   jinaApiKey: '',
   searchProvider: 'serper',
@@ -62,15 +98,21 @@ export function loadArchiveMetas(): ArchiveEntryMeta[] {
     if (!raw) return [];
     const obj = JSON.parse(raw) as Record<string, any>;
     return Object.values(obj)
-      .map((v: any) => ({
-        caseId: v?.caseFile?.caseId || v?.caseId || '?',
-        title: v?.caseFile?.target?.title || v?.title || '(无标题)',
-        verdictWord: v?.verdict?.word || v?.verdictWord || '?',
-        rule: v?.verdict?.rule || v?.rule || '',
-        generatedAt: v?.generatedAt || '',
-        evidenceCount: (v?.evidence || []).length ?? 0,
-        e4: v?.verdict?.counts?.E4 ?? 0,
-      }))
+      .map((v: any) => {
+        const admitted = (v?.evidence || []).filter(isAdmissibleEvidence).length;
+        const required = v?.admission?.required ?? MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+        const originalWord = v?.verdict?.word || v?.verdictWord || '?';
+        const insufficient = admitted < required && !['休庭', '不予受理'].includes(originalWord);
+        return {
+          caseId: v?.caseFile?.caseId || v?.caseId || '?',
+          title: v?.caseFile?.target?.title || v?.title || '(无标题)',
+          verdictWord: insufficient ? '不足立案' : originalWord,
+          rule: insufficient ? `正式证据仅 ${admitted} 组，未达到 ${required} 组立案门槛` : (v?.verdict?.rule || v?.rule || ''),
+          generatedAt: v?.generatedAt || '',
+          evidenceCount: (v?.evidence || []).length ?? 0,
+          e4: v?.verdict?.counts?.E4 ?? 0,
+        };
+      })
       .sort((a, b) => (a.generatedAt < b.generatedAt ? 1 : -1));
   } catch {
     return [];

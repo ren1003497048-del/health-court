@@ -70,6 +70,8 @@ export interface FingerprintCandidate {
   type: 'weird_term' | 'rare_case' | 'data_combo' | 'analogy' | 'joke' | 'ordering' | 'other';
   priority: 'E4_suspect' | 'high' | 'normal';
   targetQuote: string;
+  /** 导出兼容字段：始终与 targetQuote 同值，便于外部判例工具追溯原始指纹句 */
+  quote?: string;
   note?: string;
   searchKeywordsZh: string[];
   searchKeywordsEn: string[];
@@ -91,6 +93,9 @@ export interface SourceDoc {
   similarity?: number;
   /** v2.2 候选源 AI 摘要（含语言、类型、主题、与目标重合点） */
   aiSummary?: string;
+  /** 候选源与被检主体的关系；同题材但非同一主体不得进入正式证据链 */
+  subjectRelation?: 'direct_source' | 'same_event' | 'same_topic' | 'unrelated' | 'unknown';
+  subjectRelationNote?: string;
   /** v2.2.6 候选源为播客单集且已自动转录取全文 */
   transcribed?: boolean;
   /** v2.2 淘汰原因（不入卷时记录，透明可复核） */
