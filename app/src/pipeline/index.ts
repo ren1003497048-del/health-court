@@ -10,7 +10,7 @@ import {
   ALIGN_SYSTEM, FPCHECK_SYSTEM, VERDICT_OPINION_SYSTEM, DISCOVERY_QUERY_SYSTEM,
 } from '../court/prompts';
 import { locateQuote, truncateSmart, parseJinaMarkdown, normalize } from '../court/textUtils';
-import { preReview, extractDate } from '../court/preReview';
+import { preReview, extractDate, MIN_TARGET_TEXT_CHARS } from '../court/preReview';
 import { stripPageChrome, chromeRatio } from '../court/chromeStrip';
 import { applyFingerprintDiscipline, isMirrorOrGenericSource } from '../court/fingerprintDiscipline';
 import { cjkPunctNormalize } from '../court/textUtils';
@@ -18,7 +18,7 @@ import { plainLevelName } from '../court/evidence';
 import { SOURCE_QUALITY_GATE } from '../court/evidence';
 
 /** 立案门槛（PRD §5.1）：评定对象=相对独立完整的文化内容整体 */
-export const MIN_TARGET_CHARS = 100; // 2026-08-20 用户拍板：文学节选/短篇从宽（原 500）
+export const MIN_TARGET_CHARS = MIN_TARGET_TEXT_CHARS; // 2026-08-20 用户拍板：文学节选/短篇从宽（原 500）
 export const MIN_EPISODE_MINUTES = 5;
 
 export interface StageLog {

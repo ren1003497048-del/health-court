@@ -80,6 +80,14 @@ describe('立案门槛（评定对象=完整文化内容整体）', () => {
 });
 
 describe('归属预审（P0-1）', () => {
+  it('粘贴文本与立案层共用 100 字门槛', async () => {
+    const { preReview, MIN_TARGET_TEXT_CHARS } = await import('../src/court/preReview');
+    const { MIN_TARGET_CHARS } = await import('../src/pipeline/index');
+    expect(MIN_TARGET_TEXT_CHARS).toBe(100);
+    expect(MIN_TARGET_CHARS).toBe(MIN_TARGET_TEXT_CHARS);
+    expect(preReview({ text: '文'.repeat(99), fetched: { title: '短片段', text: '文'.repeat(99) } }).pass).toBe(false);
+    expect(preReview({ text: '文'.repeat(100), fetched: { title: '完整短篇', text: '文'.repeat(100) } }).pass).toBe(true);
+  });
   it('播客单集页面仅含简介 → 不通过，要求转录', async () => {
     const { preReview, isSubstantialBody, parseEpisodeMinutes } = await import('../src/court/preReview');
     expect(isSubstantialBody('这是一段简短的shownotes介绍，大约一百字。', 'podcast')).toBe(false);

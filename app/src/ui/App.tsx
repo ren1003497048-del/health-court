@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import type { CaseFile, SourceDoc } from '../court/types';
 import type { EvidenceItem, VerdictResult } from '../court/evidence';
 import type { VerdictDoc } from '../pipeline';
-import { EVIDENCE_LEVEL_INFO, NAMING_FOOTNOTE, PLAIN_CRITERIA, plainLevelName } from '../court/evidence';
+import { DISCLAIMER, EVIDENCE_LEVEL_INFO, PLAIN_CRITERIA, plainLevelName } from '../court/evidence';
 import { DEFAULT_SETTINGS } from '../store/local';
 
 export type Tab = 'court' | 'archive' | 'settings' | 'about';
@@ -37,24 +37,26 @@ const readSoundPreference = (): boolean => {
   }
 };
 
-const playCourtTone = (enabled: boolean, kind: 'preview' | 'objection' | 'complete') => {
+type CourtToneKind = 'preview' | 'objection' | 'complete' | 'gavel';
+
+const playCourtTone = (enabled: boolean, kind: CourtToneKind) => {
   if (!enabled || typeof window === 'undefined') return;
   const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
   if (!AudioContextCtor) return;
 
   const context = new AudioContextCtor();
-  const notes = kind === 'complete' ? [523, 659, 784] : kind === 'objection' ? [659, 880] : [659];
-  const noteLength = kind === 'complete' ? 0.16 : 0.11;
-  const gap = kind === 'complete' ? 0.13 : 0.09;
+  const notes = kind === 'complete' ? [523, 659, 784] : kind === 'objection' ? [659, 880] : kind === 'gavel' ? [180, 108] : [659];
+  const noteLength = kind === 'complete' ? 0.16 : kind === 'gavel' ? 0.085 : 0.11;
+  const gap = kind === 'complete' ? 0.13 : kind === 'gavel' ? 0.038 : 0.09;
 
   notes.forEach((frequency, index) => {
     const startAt = context.currentTime + index * gap;
     const oscillator = context.createOscillator();
     const gain = context.createGain();
-    oscillator.type = 'triangle';
+    oscillator.type = kind === 'gavel' && index === 0 ? 'square' : 'triangle';
     oscillator.frequency.setValueAtTime(frequency, startAt);
     gain.gain.setValueAtTime(0.0001, startAt);
-    gain.gain.exponentialRampToValueAtTime(0.055, startAt + 0.012);
+    gain.gain.exponentialRampToValueAtTime(kind === 'gavel' ? 0.075 : 0.055, startAt + 0.012);
     gain.gain.exponentialRampToValueAtTime(0.0001, startAt + noteLength);
     oscillator.connect(gain);
     gain.connect(context.destination);
@@ -64,6 +66,39 @@ const playCourtTone = (enabled: boolean, kind: 'preview' | 'objection' | 'comple
 
   window.setTimeout(() => void context.close(), 900);
 };
+
+function CourtGavel(): React.ReactElement {
+  const [hit, setHit] = useState(0);
+  return (
+    <button
+      className="gavel-button"
+      type="button"
+      onClick={() => {
+        setHit((value) => value + 1);
+        playCourtTone(true, 'gavel');
+      }}
+      aria-label="重放法槌敲击"
+      title="点击重放法槌敲击"
+    >
+      <span className="gavel-stage" aria-hidden="true">
+        <svg key={hit} className="gavel-svg" viewBox="0 0 220 170" role="presentation">
+          <g className="gavel-motion">
+            <rect className="gavel-fill" x="42" y="36" width="136" height="50" rx="12" />
+            <path className="gavel-band" d="M72 38v46M148 38v46" />
+            <path className="gavel-handle" d="M110 87v49" />
+            <path className="gavel-grip" d="M110 119v24" />
+          </g>
+          <g className="gavel-impact">
+            <path d="M64 148h92" />
+            <path d="m53 132-16-8M48 149H27M167 131l16-9" />
+            <path className="gavel-block" d="M75 139h70l12 11H63z" />
+          </g>
+        </svg>
+      </span>
+      <span className="gavel-caption">点击法槌重放</span>
+    </button>
+  );
+}
 
 /** v3.1 引文高亮：在扩展引文中对命中短语标红 */
 const HighlightQuote = ({ text, phrase }: { text: string; phrase?: string }) => {
@@ -482,6 +517,7 @@ export function App(): React.ReactElement {
       )}
 
       <main>
+        <div className="page-view" key={tab}>
         {tab === 'court' && (
           <Courtroom
             input={input}
@@ -500,6 +536,7 @@ export function App(): React.ReactElement {
         {tab === 'archive' && <Archive />}
         {tab === 'settings' && <Settings />}
         {tab === 'about' && <About />}
+        </div>
       </main>
 
       <footer className="footer">
@@ -613,7 +650,7 @@ function Courtroom(props: {
               <textarea
                 id="case-body"
                 className="input-main"
-                placeholder="或直接粘贴正文（不少于 500 字）"
+                placeholder="或直接粘贴正文（不少于 100 字）"
                 value={bodyText}
                 onChange={(e) => setBodyText(e.target.value)}
               />
@@ -707,24 +744,28 @@ function VerdictView(props: {
   const { doc, onExportHtml, onExportJson, exporting } = props;
   const v = doc.verdict;
   return (
-    <>
-      <section className="panel verdict-stage-panel focus-lines">
-        <span className="gavel">🔨</span>
+    <div className="court-flow verdict-flow">
+      <section className="panel court-sheet verdict-stage-panel">
+        <span className="verdict-kicker">庭审终局 · 本案裁决</span>
+        <CourtGavel />
         <div className={'verdict-word ' + v.word}>{v.word}</div>
         {v.word === '可能卫生' && (
-          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4, letterSpacing: '0.02em' }}>请持续关注精神卫生。</div>
+          <div className="verdict-note">请持续关注精神卫生。</div>
         )}
-        <a href="#evidence-list" style={{ display: 'inline-block', marginTop: 8, fontSize: 13, textDecoration: 'underline' }}>查看证据清单 ↓</a>
+        <a className="verdict-jump" href="#evidence-list">查看证据清单 ↓</a>
         <div className="stamp">卫生法庭 · 宣判</div>
         <p className="verdict-rule">{v.rule}</p>
-        <p className="verdict-rule" style={{ fontSize: 13 }}>
+        <p className="verdict-rule verdict-counts">
           错误照搬×{v.counts.E4} · 罕见材料×{v.counts.E3} · 论证链同构{v.counts.E2 ? '√' : '—'} · 句式直译×{v.counts.E5} ｜ 来源标注：
           {v.attribution === 'complete' ? '完整（仅指发布署名，不证明原创）' : v.attribution === 'partial' ? '部分' : v.attribution === 'none' ? '无' : '不明'}
         </p>
       </section>
 
-      <section className="panel">
-        <h2 className="panel-title">判决书 · {doc.caseFile.caseId}</h2>
+      <section className="panel court-sheet verdict-document-panel">
+        <div className="panel-heading-row verdict-document-heading">
+          <h2 className="panel-title">判决书</h2>
+          <span className="case-number">{doc.caseFile.caseId}</span>
+        </div>
         <table className="table" style={{ marginBottom: 14 }}>
           <tbody>
             <tr>
@@ -904,15 +945,15 @@ function VerdictView(props: {
         )}
 
         {(doc as any).prosecution && (
-          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div style={{ padding: 10, border: '1px solid rgba(107,143,113,.4)', borderRadius: 6, background: 'rgba(107,143,113,.06)' }}>
+          <div className="argument-grid" style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="argument-card prosecution" style={{ padding: 10, border: '1px solid rgba(107,143,113,.4)', borderRadius: 6, background: 'rgba(107,143,113,.06)' }}>
               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>公诉人立论</div>
               <div style={{ fontSize: 13, lineHeight: 1.8 }}>{(doc as any).prosecution.argument}</div>
               {(doc as any).prosecution.charges?.slice(0, 3).map((c: any, i: number) => (
                 <div key={i} className="hint" style={{ marginTop: 4 }}>· {c.charge}</div>
               ))}
             </div>
-            <div style={{ padding: 10, border: '1px solid rgba(176,122,30,.4)', borderRadius: 6, background: 'rgba(176,122,30,.06)' }}>
+            <div className="argument-card defense" style={{ padding: 10, border: '1px solid rgba(176,122,30,.4)', borderRadius: 6, background: 'rgba(176,122,30,.06)' }}>
               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>辩护人驳斥</div>
               <div style={{ fontSize: 13, lineHeight: 1.8 }}>{(doc as any).defense?.overall || '（无）'}</div>
               {(doc as any).defense?.attacks?.slice(0, 3).map((a: any, i: number) => (
@@ -943,8 +984,8 @@ function VerdictView(props: {
           </details>
         )}
 
-        <div className="input-row" style={{ marginTop: 18 }}>
-          <button className="btn" onClick={onExportHtml} disabled={exporting}>
+        <div className="verdict-actions">
+          <button className="btn btn-primary" onClick={onExportHtml} disabled={exporting}>
             导出判决书 HTML
           </button>
           <button className="btn btn-ghost" onClick={onExportJson}>
@@ -956,7 +997,7 @@ function VerdictView(props: {
           {doc.disclaimer}
         </div>
       </section>
-    </>
+    </div>
   );
 }
 
@@ -966,18 +1007,25 @@ function VerdictView(props: {
 
 function Archive(): React.ReactElement {
   const [metas, setMetas] = useState<ReturnType<typeof import('../store/local').loadArchiveMetas>>([]);
-  const [doc, setDoc] = useState<any>(null);
   React.useEffect(() => {
     import('../store/local').then((m) => setMetas(m.loadArchiveMetas()));
   }, []);
   return (
-    <>
-      <section className="panel">
-        <h2 className="panel-title">判例集</h2>
+      <section className="panel court-sheet archive-panel">
+        <div className="panel-heading-row">
+          <h2 className="panel-title">判例集</h2>
+          <span className="status-chip">本机存档 · {metas.length} 件</span>
+        </div>
+        <p className="page-intro">每次宣判后，案卷会保存在当前浏览器。你可以导出判决书，或删除不再需要的记录。</p>
         {metas.length === 0 ? (
-          <p className="hint">暂无判例。开庭后的判决会自动存入本浏览器（localStorage），可导出 JSON 备份。</p>
+          <div className="empty-docket">
+            <span aria-hidden="true">○</span>
+            <strong>卷宗架还是空的</strong>
+            <p>完成一次核查后，判决会自动出现在这里。</p>
+          </div>
         ) : (
-          <table className="table">
+          <div className="table-scroll">
+          <table className="table archive-table">
             <thead>
               <tr>
                 <th>案号</th>
@@ -991,16 +1039,17 @@ function Archive(): React.ReactElement {
             <tbody>
               {metas.map((m) => (
                 <tr key={m.caseId}>
-                  <td>{m.caseId}</td>
-                  <td>{m.title.slice(0, 40)}</td>
-                  <td>
+                  <td data-label="案号" className="archive-case-id">{m.caseId}</td>
+                  <td data-label="标的" className="archive-title">{m.title.slice(0, 40)}</td>
+                  <td data-label="裁决">
                     <span className={'badge v-' + m.verdictWord}>{m.verdictWord}</span>
                   </td>
-                  <td>{m.e4}</td>
-                  <td>{m.generatedAt.slice(0, 16).replace('T', ' ')}</td>
-                  <td>
+                  <td data-label="错误照搬">{m.e4}</td>
+                  <td data-label="时间">{m.generatedAt.slice(0, 16).replace('T', ' ')}</td>
+                  <td data-label="操作">
+                    <div className="archive-actions">
                     <button
-                      className="btn btn-ghost"
+                      className="btn btn-ghost btn-compact"
                       onClick={async () => {
                         const mod = await import('../store/local');
                         const d = mod.loadArchiveDoc(m.caseId);
@@ -1013,9 +1062,9 @@ function Archive(): React.ReactElement {
                       导出
                     </button>
                     <button
-                      className="btn btn-ghost"
-                      style={{ marginLeft: 6 }}
+                      className="btn btn-ghost btn-compact btn-danger-quiet"
                       onClick={async () => {
+                        if (!window.confirm(`删除案卷 ${m.caseId}？此操作无法撤销。`)) return;
                         const mod = await import('../store/local');
                         mod.deleteFromArchive(m.caseId);
                         setMetas(mod.loadArchiveMetas());
@@ -1023,14 +1072,15 @@ function Archive(): React.ReactElement {
                     >
                       删除
                     </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
-    </>
   );
 }
 
@@ -1138,89 +1188,119 @@ function Settings(): React.ReactElement {
   };
 
   return (
-    <section className="panel">
-      <h2 className="panel-title">设置 · 模型接入（BYOK）</h2>
-      <div className="key-warn">
-        你的 API Key 只保存在你的浏览器（localStorage），所有请求从你的浏览器直接发往你所配置的服务商，本站无服务器、无埋点。
+    <section className="panel court-sheet settings-panel">
+      <div className="panel-heading-row">
+        <h2 className="panel-title">设置</h2>
+        <span className="status-chip">BYOK · 本地保存</span>
       </div>
-      <div className="field">
-        <label>供应商</label>
-        <select
-          value={s.kind}
-          onChange={(e) => setS({ ...s, kind: e.target.value as any })}
-        >
-          <option value="glm">GLM（智谱 bigmodel，默认）</option>
-          <option value="deepseek">DeepSeek</option>
-          <option value="gemini">Google Gemini（推荐）</option>
-          <option value="openai-compat">OpenAI 兼容端点（Moonshot / OpenRouter / 自建）</option>
-        </select>
-        <div className="desc">
-          <a href="https://open.bigmodel.cn" target="_blank" rel="noreferrer">GLM bigmodel.cn ↗</a>（默认，glm-4-flash 免费档）· <a href="https://platform.deepseek.com" target="_blank" rel="noreferrer">DeepSeek ↗</a>（deepseek-chat，无内置检索）· <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio ↗</a>（gemini-2.0-flash，原生 google_search，推荐）· 其他 OpenAI 兼容端点自填 Base URL。
+      <p className="page-intro">依次接通主模型、搜索取证与音频转录。未使用的可选项可以留空。</p>
+      <div className="key-warn privacy-note">
+        API Key 保存在当前浏览器的 localStorage 中；核查请求由浏览器直接发送至所选服务。请勿在公共设备上保存密钥。
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-heading">
+          <span>01</span>
+          <div><h3>主模型</h3><p>负责案情画像、候选分析与判词生成。</p></div>
+        </div>
+        <div className="settings-grid">
+          <div className="field field-wide">
+            <label>模型供应商</label>
+            <select value={s.kind} onChange={(e) => setS({ ...s, kind: e.target.value as any })}>
+              <option value="glm">GLM（智谱 bigmodel，默认）</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="openai-compat">OpenAI 兼容端点</option>
+            </select>
+            <div className="desc settings-links">
+              获取密钥：<a href="https://open.bigmodel.cn" target="_blank" rel="noreferrer">GLM ↗</a> · <a href="https://platform.deepseek.com" target="_blank" rel="noreferrer">DeepSeek ↗</a> · <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio ↗</a>
+            </div>
+          </div>
+          <div className="field">
+            <label>API Key</label>
+            <input type="password" value={s.apiKey} onChange={(e) => setS({ ...s, apiKey: e.target.value })} placeholder="填入所选供应商的密钥" />
+          </div>
+          <div className="field">
+            <label>接口地址（Base URL）</label>
+            <input value={s.baseUrl} onChange={(e) => setS({ ...s, baseUrl: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>主模型</label>
+            <input value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} />
+          </div>
+          {s.kind === 'glm' && (
+            <div className="field">
+              <label>检索模型（选填）</label>
+              <input value={s.searchModel} onChange={(e) => setS({ ...s, searchModel: e.target.value })} placeholder="留空则使用主模型" />
+            </div>
+          )}
         </div>
       </div>
-      <div className="field">
-        <label>API Key</label>
-        <input type="password" value={s.apiKey} onChange={(e) => setS({ ...s, apiKey: e.target.value })} placeholder="填入所选供应商的 API Key（GLM: bigmodel.cn 控制台创建）" />
-      </div>
-      <div className="field">
-        <label>Base URL</label>
-        <input value={s.baseUrl} onChange={(e) => setS({ ...s, baseUrl: e.target.value })} />
-      </div>
-      <div className="field">
-        <label>模型</label>
-        <input value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} />
-      </div>
-      {s.kind === 'glm' && (
-        <div className="field">
-          <label>检索专用模型（可选，默认同上）</label>
-          <input value={s.searchModel} onChange={(e) => setS({ ...s, searchModel: e.target.value })} placeholder="留空 = 同主模型" />
+
+      <div className="settings-group">
+        <div className="settings-group-heading">
+          <span>02</span>
+          <div><h3>搜索取证</h3><p>寻找候选来源，并抓取可供对质的页面正文。</p></div>
         </div>
-      )}
-      <div className="field">
-        <label>Jina Key（可选，提高抓取配额）</label>
-        <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="可留空使用免费额度；jina.ai 注册可提速提量" />
-      </div>
-      <div className="field">
-        <label>搜索通道</label>
-        <select value={s.searchProvider} onChange={(e) => setS({ ...s, searchProvider: e.target.value as any })}>
-          <option value="serper">Serper（默认·本庭共享额度，每案 24 次）</option>
-          <option value="provider">主模型内置检索（GLM web_search / Gemini google_search）</option>
-        </select>
-        <div className="desc">
-          共享额度用尽或需更多次数，可<a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a>免费注册（2500 次额度），Key 填在下面。主模型为 DeepSeek / OpenAI 兼容端点时，请选择 Serper 作为搜索通道。
-        </div>
-        <input style={{ marginTop: 8 }} type="password" value={s.serperApiKey} onChange={(e) => setAndSave({ serperApiKey: e.target.value })} placeholder="填入你在 serper.dev 的 Key（64 位，x- 开头无需处理）" />
-      </div>
-      <div className="field">
-        <label>语音转录（播客单集自动转录）</label>
-        <select value={s.asrKind} onChange={(e) => setAndSave({ asrKind: e.target.value as any })}>
-          <option value="groq">Groq · whisper-large-v3（推荐，console.groq.com 免费注册）</option>
-          <option value="glm">GLM ASR（复用上方 GLM Key，需 ASR 额度）</option>
-        </select>
-        {s.asrKind === 'groq' && (
-          <input style={{ marginTop: 8 }} type="password" value={s.groqApiKey} onChange={(e) => setAndSave({ groqApiKey: e.target.value })} placeholder="填入 Groq Key（gsk_ 开头，API Keys 页面创建）" />
-        )}
-        <div className="desc">
-          提交播客单集链接时，本庭自动定位音频并转录为内容本体。Groq：<a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys ↗</a>注册后在 API Keys 页创建（免费，whisper-large-v3）。音频经你的浏览器直连所选转录服务。
+        <div className="settings-grid">
+          <div className="field field-wide">
+            <label>搜索通道</label>
+            <select value={s.searchProvider} onChange={(e) => setS({ ...s, searchProvider: e.target.value as any })}>
+              <option value="serper">Serper（默认，共享额度每案 24 次）</option>
+              <option value="provider">主模型内置检索（GLM / Gemini）</option>
+            </select>
+            <div className="desc">DeepSeek 与 OpenAI 兼容端点没有内置检索时，请使用 Serper。</div>
+          </div>
+          <div className="field">
+            <label>Serper API Key（选填）</label>
+            <input type="password" value={s.serperApiKey} onChange={(e) => setAndSave({ serperApiKey: e.target.value })} placeholder="共享额度不足时再填写" />
+            <div className="desc"><a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a></div>
+          </div>
+          <div className="field">
+            <label>Jina API Key（选填）</label>
+            <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="留空使用公开额度" />
+          </div>
         </div>
       </div>
-      <div className="input-row">
-        <button className="btn" onClick={save} disabled={!s.apiKey}>
+
+      <div className="settings-group">
+        <div className="settings-group-heading">
+          <span>03</span>
+          <div><h3>音频转录</h3><p>仅在提交播客单集且页面没有正文时使用。</p></div>
+        </div>
+        <div className="settings-grid">
+          <div className="field field-wide">
+            <label>转录服务</label>
+            <select value={s.asrKind} onChange={(e) => setAndSave({ asrKind: e.target.value as any })}>
+              <option value="groq">Groq · whisper-large-v3</option>
+              <option value="glm">GLM ASR（复用主模型 Key）</option>
+            </select>
+          </div>
+          {s.asrKind === 'groq' && (
+            <div className="field field-wide">
+              <label>Groq API Key</label>
+              <input type="password" value={s.groqApiKey} onChange={(e) => setAndSave({ groqApiKey: e.target.value })} placeholder="在 console.groq.com 创建" />
+              <div className="desc"><a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">打开 Groq API Keys ↗</a></div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="settings-actions">
+        <button className="btn btn-primary" onClick={save} disabled={!s.apiKey}>
           保存
         </button>
         <button className="btn btn-ghost" onClick={test} disabled={testing || !s.apiKey}>
           {testing ? '检测中…' : '连通性自检'}
         </button>
-        {saved && <span className="hint" style={{ alignSelf: 'center' }}>已保存 ✓</span>}
+        {saved && <span className="save-state" role="status">已保存 ✓</span>}
       </div>
       {testResult && (
-        <div className="key-warn" style={{ marginTop: 14 }}>
+        <div className="connection-result" role="status">
           {testResult}
         </div>
       )}
-      <p className="hint" style={{ marginTop: 14 }}>
-        每案消耗参考：约 10–20 次 LLM 调用 + 3–6 次搜索 + 2–6 次网页抓取。glm-4-flash 免费档下通常无感。
-      </p>
+      <p className="settings-footnote">用量随文本长度和候选源数量变化；连通性自检只检查接口是否可用，不代表一次完整庭审必然成功。</p>
     </section>
   );
 }
@@ -1231,20 +1311,25 @@ function Settings(): React.ReactElement {
 
 function About(): React.ReactElement {
   return (
-    <section className="panel about-body">
-      <h2 className="panel-title">关于卫生法庭</h2>
-      <p>
-        卫生法庭是一个半娱乐半严肃的内容核查法庭：你对一段文化内容起疑，本庭依照司法级证据规程完成取证、侦查、检索、对质与宣判，最后给出「卫生 / 可能不卫生 / 不卫生」的裁决与一份可复核的判决书。
-      </p>
-      <h3>设计公理：机制严谨 × 呈现漫画</h3>
-      <p>
-        证据分级、指纹验证、结构对齐与裁决阈值全部由确定性规则驱动；引文必须通过子串定位校验。动画、音效、漫画元素只读取裁决结果用于演出，从不参与计算。把所有动画关掉，每份判决与之相比一字不差。
-      </p>
-      <h3>本庭看什么（四条判据）</h3>
-      <p style={{ margin: '0 0 10px', fontSize: 14 }}>
-        话题本身的重合不构成判定依据——本庭只看同一话题下的展开方式与文本组织；常识和单个事实的重合同样不计：
-      </p>
-      <table className="table">
+    <section className="panel court-sheet about-body">
+      <div className="panel-heading-row">
+        <h2 className="panel-title">关于卫生法庭</h2>
+        <span className="status-chip">文本来源核查</span>
+      </div>
+      <p className="about-lede">卫生法庭用于核查一段文本与既有来源之间的表达、材料和结构关系。它把复杂的检索过程组织成一场庭审，但不会替你作法律判断。</p>
+
+      <div className="about-stage-line" aria-label="工作流程">
+        {STAGES.map((stage, index) => <span key={stage}><b>{String(index + 1).padStart(2, '0')}</b>{stage}</span>)}
+      </div>
+
+      <h3>它如何工作</h3>
+      <p>模型参与案情画像、检索词生成、候选比对与判词撰写；程序继续检查来源质量、引文定位、证据降级和裁决阈值。最终裁决词由固定规则映射，漫画动效和声音只负责呈现，不改变证据。</p>
+      <p>检索无法穷尽版权墙内、未数字化或尚未被索引的材料，因此「未发现」不等于「证明清白」。判决书会同时列出命中、未命中和核查局限，供你自行复核。</p>
+
+      <h3>本庭核查什么</h3>
+      <p className="section-intro">同一话题、常识或单个公共事实不会单独触发裁决；重点是文本如何选材、排列和表达。</p>
+      <div className="table-scroll">
+      <table className="table criteria-table">
         <thead>
           <tr><th>判据</th><th>问题</th></tr>
         </thead>
@@ -1252,13 +1337,17 @@ function About(): React.ReactElement {
           {PLAIN_CRITERIA.map((c) => (
             <tr key={c.name}>
               <td><b>{c.name}</b></td>
-              <td>{c.question}</td>
+              <td>{c.question.replace(/"([^"]+)"/g, '「$1」')}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <h3>证据分级（E1–E5，内部技术分级）</h3>
-      <table className="table">
+      </div>
+
+      <details className="about-details">
+        <summary>查看内部证据分级（E1—E5）</summary>
+        <div className="table-scroll">
+      <table className="table evidence-scale-table">
         <thead>
           <tr>
             <th>级别</th>
@@ -1278,22 +1367,20 @@ function About(): React.ReactElement {
           ))}
         </tbody>
       </table>
-      <h3>裁决阈值</h3>
-      <ul style={{ lineHeight: 1.9 }}>
-        <li>不卫生：发现「同一个错误」（源文的错误被照搬），或论证链同构（≥3 环节一致）+ 至少 3 处罕见材料对应</li>
-        <li>可能不卫生：出现罕见材料或例子组合的对应，但数量或连贯性不足</li>
-        <li>卫生：完成对质而未发现上述四种痕迹（未发现 ≠ 清白）</li>
-        <li>休庭：内容不可得 / 无候选源 / 证据不足</li>
-      </ul>
-      <h3>命名出处</h3>
-      <div className="footnote-box">{NAMING_FOOTNOTE}</div>
-      <h3>隐私</h3>
-      <p>
-        本站为纯静态页面（GitHub Pages），无服务器、无埋点。案件档案与 API Key 只存于你的浏览器 localStorage，可随时在判例集删除或清空浏览器数据。
-      </p>
-      <div className="footnote-box">
-        本产品输出为文本证据的自动化分析，非法律结论；「不卫生」等裁决词为游戏化表述。本庭不对内容作者作动机推断，请读者依据材料自行判断。
+        </div>
+      </details>
+
+      <h3>裁决怎么读</h3>
+      <div className="ruling-grid">
+        <div className="ruling-card is-red"><strong>不卫生</strong><p>至少发现一处相同错误被照搬；或确认论证链同构，并有至少三处独立的罕见材料对应。</p></div>
+        <div className="ruling-card is-gold"><strong>可能不卫生</strong><p>已经出现具体对应、结构组合或多处直译线索，但现有证据仍不足以排除巧合。</p></div>
+        <div className="ruling-card is-green"><strong>可能卫生</strong><p>在本次可达来源和对质范围内没有发现达到阈值的来源依赖痕迹。</p></div>
+        <div className="ruling-card is-gray"><strong>休庭</strong><p>内容不可得，或多轮检索后仍没有可供对质的候选来源。</p></div>
       </div>
+
+      <h3>数据与边界</h3>
+      <p>本站前端部署在 GitHub Pages，没有项目自建的业务服务器。API Key 与判例保存在当前浏览器；文本、来源页面或音频会按你的配置直接发送至模型、搜索、抓取或转录服务。使用前请确认相应服务的隐私政策，并避免提交敏感内容。</p>
+      <div className="footnote-box">{DISCLAIMER}</div>
     </section>
   );
 }

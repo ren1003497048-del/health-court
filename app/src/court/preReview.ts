@@ -12,6 +12,9 @@ export interface PreReviewInput {
   fetched: { title: string; text: string; authorHint?: string; dateHint?: string };
 }
 
+/** 粘贴文本的统一受理门槛；立案、预审与界面提示共同引用。 */
+export const MIN_TARGET_TEXT_CHARS = 100;
+
 /** 平台已知模式：能从 URL/页面直接确定的归属 */
 const PLATFORM_PATTERNS: Array<{ re: RegExp; platform: string; kind: 'podcast' | 'article' | 'video' | 'book' }> = [
   { re: /xiaoyuzhoufm\.com\/(episode|podcast)/, platform: '小宇宙', kind: 'podcast' },
@@ -48,7 +51,7 @@ export function isSubstantialBody(
   durationMinutes?: number,
 ): boolean {
   const clean = text.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\s+/g, '');
-  if (kind !== 'podcast') return clean.length >= 500;
+  if (kind !== 'podcast') return clean.length >= MIN_TARGET_TEXT_CHARS;
   const abs = clean.length >= 4000;
   if (durationMinutes && durationMinutes > 0) {
     const expected = Math.floor(durationMinutes * 300 * 0.5);
@@ -99,7 +102,7 @@ export function preReview(input: PreReviewInput): PreReviewResult {
       pass: false,
       attributionChain: chain,
       completeness: { isIndependentWork: false, hasSubstantialBody: false, note: '文本长度不足' },
-      failNote: '提交的文本不构成相对独立、自身完整的文化内容（不少于 500 字）。片段、摘要、单条评论不足以构成评定对象。',
+      failNote: `提交的文本不构成相对独立、自身完整的文化内容（不少于 ${MIN_TARGET_TEXT_CHARS} 字）。片段、摘要、单条评论不足以构成评定对象。`,
     };
   }
 
