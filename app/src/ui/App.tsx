@@ -667,6 +667,23 @@ function VerdictView(props: {
               <span className="evidence-id">{e.level === 'E4' ? '错误被复制' : e.level === 'E3' ? '具体对应' : e.level === 'E2' ? '结构对应' : '查证记录'}</span>
               {(e.detail as any)?.demoted && <span className="hint" style={{ marginLeft: 8 }}>（线索级，不计入定案）</span>}
             </div>
+            {(e.detail as any)?.contextTarget || (e.detail as any)?.contextSource ? (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 12.5, opacity: 0.85 }}>展开上下文（前后各约 200 字，{(e.detail as any)?.contextVerified ? '已机械校验逐字真实' : ''}）</summary>
+                {(e.detail as any)?.contextTarget && (
+                  <div className="quote-box target" style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.9 }}>
+                    <span className="quote-label">被检内容·上下文</span>
+                    <div className="palette-text" style={{ opacity: 0.92 }}><HighlightQuote text={(e.detail as any).contextTarget} phrase={(e.detail as any)?.hitPhraseTarget} /></div>
+                  </div>
+                )}
+                {(e.detail as any)?.contextSource && (
+                  <div className="quote-box source" style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.9 }}>
+                    <span className="quote-label">参照源文·上下文</span>
+                    <div className="palette-text" style={{ opacity: 0.92 }}><HighlightQuote text={(e.detail as any).contextSource} phrase={(e.detail as any)?.hitPhraseSource} /></div>
+                  </div>
+                )}
+              </details>
+            ) : null}
             {(e.targetParaphrase || e.sourceParaphrase) && (
               <div style={{ marginTop: 6, fontSize: 13.5, lineHeight: 1.9 }}>
                 {e.sourceParaphrase && <div>{e.sourceParaphrase}</div>}

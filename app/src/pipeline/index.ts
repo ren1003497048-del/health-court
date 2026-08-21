@@ -918,6 +918,39 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     } catch { /* 转述失败保留原引文呈现 */ }
   }
 
+  // v3.2 上下文披露（用户要求：证据区披露被检内容附近的文本，经核查确保完整准确）：
+  // 每条 E3/E4 证据存 contextTarget/contextSource——引文前后各~200字，命中句内嵌；
+  // 披露内容机械校验：必须是目标文本/源全文的逐字子串（locateQuote 定位失败则不披露）
+  {
+    const buildContext = (quote: string, text: string): string | undefined => {
+      if (!quote || !text) return undefined;
+      const probe = quote.slice(0, Math.min(16, quote.length));
+      const i = text.indexOf(probe);
+      if (i < 0) return undefined; // 无法定位→不披露（宁缺毋滥）
+      const qEnd = i + quote.length <= text.length ? i + quote.length : i + probe.length;
+      const start = Math.max(0, i - 200);
+      const end = Math.min(text.length, qEnd + 200);
+      return text.slice(start, end);
+    };
+    for (const ev of evidence) {
+      if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+      const src = rt.sources.find((x) => x.id === ev.sourceId);
+      const ct = ev.targetQuote ? buildContext((ev.detail as any)?.hitPhraseTarget || ev.targetQuote, cf.target.text) : undefined;
+      const cs = ev.sourceQuote && src?.fullText ? buildContext((ev.detail as any)?.hitPhraseSource || ev.sourceQuote, src.fullText) : undefined;
+      // 机械核查：上下文必须含命中短语原文（保证逐字真实，非拼接幻觉）
+      const okT = ct && ((ev.detail as any)?.hitPhraseTarget ? ct.includes((ev.detail as any).hitPhraseTarget) : ct.includes((ev.targetQuote || '').slice(0, 16)));
+      const okS = cs && ((ev.detail as any)?.hitPhraseSource ? cs.includes((ev.detail as any).hitPhraseSource) : cs.includes((ev.sourceQuote || '').slice(0, 16)));
+      (ev.detail as any) = {
+        ...(ev.detail || {}),
+        contextTarget: okT ? ct : undefined,
+        contextSource: okS ? cs : undefined,
+        contextVerified: !!(okT || okS),
+      };
+    }
+    const disclosed = evidence.filter((e) => (e.detail as any)?.contextTarget || (e.detail as any)?.contextSource).length;
+    if (disclosed) rt.log('对质', `上下文披露：${disclosed} 条证据附带前后文（已机械校验逐字真实）`);
+  }
+
   // v3.1 引文上下文扩展（8E9GJP 案用户要求：截取需相对完整）：
   // 指纹句前后各扩一句（句读边界），让读者看到语境；源引文同样扩一句
   {
