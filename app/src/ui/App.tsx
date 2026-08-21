@@ -9,18 +9,61 @@ export type Tab = 'court' | 'archive' | 'settings' | 'about';
 
 const STAGES = ['立案', '侦查', '检索', '对质', '宣判'] as const;
 
+interface ObjectionCue {
+  title: '异议！';
+  level: 'E3' | 'E4';
+  detail: string;
+  targetQuote?: string;
+  sourceQuote?: string;
+}
+
 export interface RunningState {
   stageIndex: number;
   logs: { stage: string; note: string; at: string }[];
   evidence: EvidenceItem[];
   fingerprints: number;
   sources: SourceDoc[];
-  objection: string | null;
+  objection: ObjectionCue | null;
   shake: boolean;
-  /** 异议宣言队列（对质命中项，宣判前逐条展示） */
-  objectionQueue: string[];
-  objectionPlaying: boolean;
 }
+
+const SOUND_PREFERENCE_KEY = 'health-court.sound-enabled.v1';
+
+const readSoundPreference = (): boolean => {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(SOUND_PREFERENCE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+};
+
+const playCourtTone = (enabled: boolean, kind: 'preview' | 'objection' | 'complete') => {
+  if (!enabled || typeof window === 'undefined') return;
+  const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextCtor) return;
+
+  const context = new AudioContextCtor();
+  const notes = kind === 'complete' ? [523, 659, 784] : kind === 'objection' ? [659, 880] : [659];
+  const noteLength = kind === 'complete' ? 0.16 : 0.11;
+  const gap = kind === 'complete' ? 0.13 : 0.09;
+
+  notes.forEach((frequency, index) => {
+    const startAt = context.currentTime + index * gap;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'triangle';
+    oscillator.frequency.setValueAtTime(frequency, startAt);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.055, startAt + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + noteLength);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startAt);
+    oscillator.stop(startAt + noteLength);
+  });
+
+  window.setTimeout(() => void context.close(), 900);
+};
 
 /** v3.1 引文高亮：在扩展引文中对命中短语标红 */
 const HighlightQuote = ({ text, phrase }: { text: string; phrase?: string }) => {
@@ -62,7 +105,23 @@ export function App(): React.ReactElement {
   const [verdictDoc, setVerdictDoc] = useState<VerdictDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mentalHygiene, setMentalHygiene] = useState<string | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState(readSoundPreference);
+  const soundEnabledRef = useRef(soundEnabled);
   const logRef = useRef<HTMLDivElement>(null);
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled((current) => {
+      const next = !current;
+      soundEnabledRef.current = next;
+      try {
+        localStorage.setItem(SOUND_PREFERENCE_KEY, String(next));
+      } catch {
+        // 隐私模式或存储不可用时，当前会话内仍然生效。
+      }
+      if (next) playCourtTone(true, 'preview');
+      return next;
+    });
+  }, []);
 
   /** 播客单集自动转录：Apple→iTunes enclosure / 小宇宙→shownotes 内无音频则提示 */
   const logSinkRef = useRef<(stage: string, note: string) => void>(() => {});
@@ -202,7 +261,7 @@ export function App(): React.ReactElement {
   const run = useCallback(async () => {
     setError(null);
     setVerdictDoc(null);
-    setRunning({ stageIndex: 0, logs: [], evidence: [], fingerprints: 0, sources: [], objection: null, shake: false, objectionQueue: [], objectionPlaying: false });
+    setRunning({ stageIndex: 0, logs: [], evidence: [], fingerprints: 0, sources: [], objection: null, shake: false });
     try {
       const { loadSettings } = await import('../store/local');
       const s = loadSettings();
@@ -244,16 +303,14 @@ export function App(): React.ReactElement {
         logSinkRef.current = pushLog;
         logs.push({ stage, note, at: new Date().toISOString() });
         const stageIdx = STAGES.indexOf(stage as any);
-        // E3/E4 命中 → 入异议队列（证据罗列前统一逐条展示）；E4 附加瞬时抖动
+        // E4 命中只在对质阶段增加轻微震动；异议演出由已生成的结构化证据驱动。
         const hitMatch = note.match(/(E4|E3) 指纹命中/);
         setRunning((r) => {
           if (!r) return r;
-          const queue = hitMatch ? [...r.objectionQueue, `${hitMatch[1] === 'E4' ? '異議あり！！' : '異議あり！'}｜${note.replace(/^.*(E4|E3) 指纹命中：?/, '').slice(0, 60)}`] : r.objectionQueue;
           return {
             ...r,
             logs: [...logs],
             stageIndex: stageIdx >= 0 ? stageIdx : r.stageIndex,
-            objectionQueue: queue,
             shake: hitMatch?.[1] === 'E4' ? true : r.shake,
           };
         });
@@ -326,46 +383,58 @@ export function App(): React.ReactElement {
       setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
       await transcribeCandidates(cf, rt, s);
       const evidence = await pipeline.crossExamination(cf, rt);
-      setRunning((r) => (r ? { ...r, stageIndex: 4, evidence } : r));
+      // 对质证据先完整落位，再进入异议演出；宣判阶段只在演出结束后点亮。
+      setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
 
-      // 异议宣言（证据罗列之前）：队列逐条播放，每条 2.6s，点击可跳过
-      {
-        const queue = rt.evidence
-          .filter((e) => e.level === 'E4' || e.level === 'E3')
-          .map((e) => `${e.level === 'E4' ? '異議あり！！' : '異議あり！'}｜${e.description.slice(0, 60)}`);
-        // 以对质日志命中的队列为准（若为空则用证据回填）
-        let finalQueue = queue;
-        setRunning((r) => (r ? { ...r, objectionQueue: r.objectionQueue.length ? r.objectionQueue : finalQueue, objectionPlaying: true } : r));
+      const clipQuote = (quote?: string) => quote?.replace(/\s+/g, ' ').trim().slice(0, 180) || undefined;
+      const objectionQueue: ObjectionCue[] = evidence
+        .filter((item): item is EvidenceItem & { level: 'E3' | 'E4' } => item.level === 'E3' || item.level === 'E4')
+        .map((item) => ({
+          title: '异议！',
+          level: item.level,
+          detail: item.description.slice(0, 96),
+          targetQuote: clipQuote(item.targetQuote),
+          sourceQuote: clipQuote(item.sourceQuote),
+        }));
+
+      if (objectionQueue.length > 0) {
         await new Promise<void>((resolve) => {
-          const step = (idx: number) => {
-            setRunning((r) => {
-              if (!r) return r;
-              const rest = r.objectionQueue.slice(Math.max(0, idx - 0));
-              return r;
-            });
-            // 简单顺序播放：每 2.6s 显示队列第 idx 条
-            const total = queue.length;
-            if (idx >= total) {
-              setRunning((r) => (r ? { ...r, objection: null, objectionPlaying: false } : r));
-              resolve();
-              return;
-            }
-            setRunning((r) => (r ? { ...r, objection: queue[idx] } : r));
-            window.setTimeout(() => step(idx + 1), 2600);
-          };
-          // 允许用户点击跳过：overlay onClick 结束播放
-          (window as any).__hcSkipObjection = () => {
-            setRunning((r) => (r ? { ...r, objection: null, objectionPlaying: false } : r));
+          let timer: number | undefined;
+          let finished = false;
+
+          const finish = () => {
+            if (finished) return;
+            finished = true;
+            if (timer !== undefined) window.clearTimeout(timer);
+            setRunning((r) => (r ? { ...r, objection: null, shake: false } : r));
+            delete (window as any).__hcSkipObjection;
             resolve();
           };
+
+          const step = (index: number) => {
+            if (finished) return;
+            if (index >= objectionQueue.length) {
+              finish();
+              return;
+            }
+            const cue = objectionQueue[index];
+            setRunning((r) => (r ? { ...r, stageIndex: 3, objection: cue, shake: cue.level === 'E4' } : r));
+            playCourtTone(soundEnabledRef.current, 'objection');
+            timer = window.setTimeout(() => step(index + 1), 3200);
+          };
+
+          (window as any).__hcSkipObjection = finish;
           step(0);
         });
       }
+
+      setRunning((r) => (r ? { ...r, stageIndex: 4, objection: null, shake: false } : r));
 
       const doc = await pipeline.verdictStage(cf, rt, evidence);
       setVerdictDoc(doc);
       const { saveToArchive } = await import('../store/local');
       saveToArchive(doc);
+      playCourtTone(soundEnabledRef.current, 'complete');
     } catch (e: any) {
       if (String(e?.message) === '__MENTAL_HYGIENE__') {
         setRunning(null);
@@ -380,11 +449,11 @@ export function App(): React.ReactElement {
     <>
       <header className="court-header">
         <div className="court-header-inner">
-          <div className="logo-block">
+          <div className="brand-lockup">
             <span className="logo-cn">
               卫生<span className="typo-mark">法庭</span>
             </span>
-            <span className="logo-en">HEALTH COURT*</span>
+            <span className="brand-slogan">拒绝二手转述，注重精神卫生</span>
           </div>
           <nav className="nav-tabs">
             {(['court', 'archive', 'settings', 'about'] as Tab[]).map((t) => (
@@ -398,9 +467,6 @@ export function App(): React.ReactElement {
             ))}
           </nav>
         </div>
-        <p className="naming-footnote-mini">
-          <span className="typo-mark">*「法庭」应作「服务队」</span>——一个被复制的转录错误，成就了本庭之名。
-        </p>
       </header>
 
             {mentalHygiene && (
@@ -427,6 +493,8 @@ export function App(): React.ReactElement {
             error={error}
             run={run}
             logRef={logRef}
+            soundEnabled={soundEnabled}
+            toggleSound={toggleSound}
           />
         )}
         {tab === 'archive' && <Archive />}
@@ -435,8 +503,7 @@ export function App(): React.ReactElement {
       </main>
 
       <footer className="footer">
-        <div>卫生法庭 HEALTH COURT* · 所有数据仅存于你的浏览器</div>
-        <div>*本庭之名来自一个被复制的转录错误——详见「关于」</div>
+        <div>卫生法庭 · 文本来源核查</div>
       </footer>
     </>
   );
@@ -456,8 +523,10 @@ function Courtroom(props: {
   error: string | null;
   run: () => void;
   logRef: React.RefObject<HTMLDivElement>;
+  soundEnabled: boolean;
+  toggleSound: () => void;
 }): React.ReactElement {
-  const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef } = props;
+  const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef, soundEnabled, toggleSound } = props;
   const [exporting, setExporting] = useState(false);
 
   const exportHtml = useCallback(async () => {
@@ -484,47 +553,79 @@ function Courtroom(props: {
   return (
     <>
       {running?.objection && (
-        <div className="objection-overlay" style={{ pointerEvents: 'auto', cursor: 'pointer' }} onClick={() => { (window as any).__hcSkipObjection?.(); }}>
-          <div className="objection-text" style={{ fontSize: 'clamp(56px, 11vw, 130px)' }}>{String(running.objection).split('｜')[0]}</div>
-          <div style={{
-            fontFamily: 'var(--serif)', fontWeight: 700, fontSize: 16, color: 'var(--ink)',
-            background: '#fff', border: 'var(--border)', boxShadow: 'var(--shadow-sm)',
-            padding: '10px 18px', maxWidth: 520, textAlign: 'center', lineHeight: 1.8,
-            transform: 'rotate(-2deg)',
-          }}>{String(running.objection).split('｜')[1] || ''}</div>
-          <div style={{ position: 'absolute', bottom: '12vh', fontSize: 13, color: 'var(--ink-soft)', letterSpacing: '0.2em' }}>点击任意处跳过</div>
+        <div
+          className="objection-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-live="assertive"
+          onClick={() => { (window as any).__hcSkipObjection?.(); }}
+        >
+          <div className={'objection-dialog ' + (running.objection.level === 'E4' ? 'is-e4' : 'is-e3')}>
+            <div className="objection-kicker">当前阶段 · 对质</div>
+            <div className="objection-text">{running.objection.title}</div>
+            <div className="objection-level">{running.objection.level} · 文本指纹命中</div>
+            {(running.objection.targetQuote || running.objection.sourceQuote) && (
+              <div className="objection-quotes">
+                {running.objection.targetQuote && (
+                  <blockquote>
+                    <span>目标文本</span>
+                    {running.objection.targetQuote}
+                  </blockquote>
+                )}
+                {running.objection.sourceQuote && (
+                  <blockquote>
+                    <span>来源文本</span>
+                    {running.objection.sourceQuote}
+                  </blockquote>
+                )}
+              </div>
+            )}
+            <p className="objection-detail">{running.objection.detail}</p>
+            <button className="objection-continue" type="button">继续庭审</button>
+          </div>
         </div>
       )}
 
-      <section className={'panel' + (running?.shake ? ' shake' : '')}>
-        <h2 className="panel-title">材料提交</h2>
-        <div className="input-row">
-          <input
-            className="input-main"
-            placeholder="粘贴内容链接（播客单集、文章均可，支持自动取证与转录）"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={!!running}
-          />
+      <section className={'panel intake-panel' + (running?.shake ? ' shake' : '') + (running ? ' is-running' : '')}>
+        <div className="panel-heading-row">
+          <h2 className="panel-title">材料提交</h2>
+          <span className="status-chip">{running ? '材料已入卷' : '等待立案'}</span>
         </div>
-        <div className="input-row" style={{ marginTop: 10 }}>
-          <textarea
-            className="input-main"
-            placeholder="或直接粘贴正文（粘贴文本请附上作者与发表日期，便于归属核验）"
-            value={bodyText}
-            onChange={(e) => setBodyText(e.target.value)}
-            disabled={!!running}
-          />
-        </div>
-        <div className="input-row" style={{ marginTop: 10 }}>
-          <button className="btn btn-red" onClick={run} disabled={!!running || (!input.trim() && !bodyText.trim())}>
-            {running ? '核查中…' : '提 交 材 料'}
-          </button>
-        </div>
-        <p className="hint">
-          支持完整的文化内容：文章、播客单集、节目转录稿。文字不少于 500 字，音频不少于 5 分钟。
-          核查会搜索境外来源，建议在网络畅通的环境下使用。
-        </p>
+        {running ? (
+          <div className="case-summary">
+            <span>当前材料</span>
+            <strong>{input.trim() || '已粘贴正文材料'}</strong>
+          </div>
+        ) : (
+          <>
+            <label className="input-label" htmlFor="case-url">内容链接</label>
+            <div className="input-row">
+              <input
+                id="case-url"
+                className="input-main"
+                placeholder="粘贴播客单集或文章链接"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+              />
+            </div>
+            <label className="input-label" htmlFor="case-body">正文</label>
+            <div className="input-row">
+              <textarea
+                id="case-body"
+                className="input-main"
+                placeholder="或直接粘贴正文（不少于 500 字）"
+                value={bodyText}
+                onChange={(e) => setBodyText(e.target.value)}
+              />
+            </div>
+            <div className="submit-row">
+              <button className="btn btn-primary" onClick={run} disabled={!input.trim() && !bodyText.trim()}>
+                开庭查证
+              </button>
+              <p className="hint">支持文章、播客、节目转录稿</p>
+            </div>
+          </>
+        )}
         {error && (
           <div className="key-warn" style={{ borderColor: 'var(--vermillion)', background: '#fbe3df' }}>
             {error}
@@ -532,9 +633,31 @@ function Courtroom(props: {
         )}
       </section>
 
+      {!running && !verdictDoc && (
+        <div className="idle-stage-bar" aria-label="庭审流程：立案、侦查、检索、对质、宣判">
+          {STAGES.map((stage) => <span key={stage}>{stage}</span>)}
+        </div>
+      )}
+
       {running && (
-        <section className="panel">
-          <h2 className="panel-title">核查进行中</h2>
+        <section className="panel process-panel">
+          <div className="process-heading">
+            <div>
+              <span className="process-eyebrow">庭审流程</span>
+              <h2>核查进行中 <small>当前 · {STAGES[running.stageIndex]}</small></h2>
+            </div>
+            <button
+              className={'sound-toggle' + (soundEnabled ? ' is-on' : '')}
+              type="button"
+              aria-pressed={soundEnabled}
+              onClick={toggleSound}
+              title="异议与庭审结束时播放提示音"
+            >
+              <span aria-hidden="true">◖))</span>
+              提示音 {soundEnabled ? '开' : '关'}
+              <small>庭审结束提醒</small>
+            </button>
+          </div>
           <div className="stage-bar">
             {STAGES.map((s, i) => (
               <div
@@ -548,6 +671,7 @@ function Courtroom(props: {
             ))}
           </div>
           <div className="court-log" ref={logRef}>
+            {running.logs.length === 0 && <div className="log-empty">书记员正在登记材料…</div>}
             {running.logs.map((l, i) => (
               <div className="log-line" key={i}>
                 <span className="stage-tag">[{l.stage}]</span>
