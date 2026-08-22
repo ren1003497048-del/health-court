@@ -17,11 +17,24 @@ function decodeSharedKey(): string {
   }
 }
 
-const SESSION_LIMIT = 36; // 案件级预算（2026-08-19 用户拍板：MVP 不过分节约，R0-R4 五轮放开）
-let sessionUsed = 0;
+export const SHARED_SEARCH_CASE_LIMIT = 60;
+let caseUsed = 0;
+let activeCaseId = '';
+
+/** 共享 Key 的计数严格按案件隔离；自有 Key 不受应用侧次数限制。 */
+export function beginSearchCase(caseId: string): void {
+  if (caseId && caseId !== activeCaseId) {
+    activeCaseId = caseId;
+    caseUsed = 0;
+  }
+}
 
 export function sharedSearchRemaining(): number {
-  return Math.max(0, SESSION_LIMIT - sessionUsed);
+  return Math.max(0, SHARED_SEARCH_CASE_LIMIT - caseUsed);
+}
+
+export function sharedSearchUsage(): { used: number; limit: number; caseId: string } {
+  return { used: caseUsed, limit: SHARED_SEARCH_CASE_LIMIT, caseId: activeCaseId };
 }
 
 export interface SerperConfig {
@@ -35,7 +48,7 @@ export function createSerperSearch(cfg: SerperConfig = {}) {
     async search(query: string): Promise<{ answer: string; docs: SearchDoc[] }> {
       const k = key();
       const isShared = !cfg.userApiKey?.trim();
-      if (isShared && sessionUsed >= SESSION_LIMIT) {
+      if (isShared && caseUsed >= SHARED_SEARCH_CASE_LIMIT) {
         throw new Error('SHARED_QUOTA_EXCEEDED');
       }
       const res = await fetch('https://google.serper.dev/search', {
@@ -48,7 +61,7 @@ export function createSerperSearch(cfg: SerperConfig = {}) {
         throw new Error(`serper ${res.status}：请检查你的 Serper Key`);
       }
       if (!res.ok) throw new Error(`serper ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      if (isShared) sessionUsed++;
+      if (isShared) caseUsed++;
       const data: any = await res.json();
       const docs: SearchDoc[] = [
         ...(data.organic || []),

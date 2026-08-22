@@ -9,10 +9,14 @@ import {
   MIN_ADMISSIBLE_EVIDENCE_GROUPS,
   evidenceExclusionReason,
   isAdmissibleEvidence,
+  normalizeEvidenceForSources,
   plainLevelName,
 } from '../court/evidence';
 import { DEFAULT_SETTINGS, defaultPresetForProvider, presetsForProvider } from '../store/local';
 import { stripMarkdownMedia } from '../court/chromeStrip';
+
+const gavelSwingUrl = new URL('../assets/gavel-swing-v2.png', import.meta.url).href;
+const gavelImpactUrl = new URL('../assets/gavel-impact-v2.png', import.meta.url).href;
 
 export type Tab = 'court' | 'archive' | 'settings' | 'about';
 
@@ -95,25 +99,11 @@ function CourtGavel(): React.ReactElement {
       title="点击重放法槌敲击"
     >
       <span className="gavel-stage" aria-hidden="true">
-        <svg key={hit} className="gavel-svg" viewBox="0 0 300 220" role="presentation">
-          <g className="gavel-motion">
-            <path className="gavel-head" d="M156 111h99c10 0 18 8 18 18v24c0 10-8 18-18 18h-99c-10 0-18-8-18-18v-24c0-10 8-18 18-18Z" />
-            <path className="gavel-band" d="M171 114v54M239 114v54" />
-            <path className="gavel-handle" d="m162 126-96-72" />
-            <path className="gavel-grip" d="M91 73 52 44" />
-          </g>
-          <g className="gavel-splash">
-            <path className="splash-red" d="m228 171 27-17-10 28 35 2-31 13 17 20-34-10-9 26-7-29-28 11 20-23-28-8 34-5-10-27 24 19Z" />
-            <path className="splash-ochre" d="m230 176 15-9-5 15 19 2-18 7 9 11-19-6-5 14-4-16-15 6 11-12-16-5 19-3-6-15 15 11Z" />
-            <path className="splash-blue" d="m206 181-27-22M210 197l-35 8M243 158l13-25M255 201l30 16" />
-          </g>
-          <g className="gavel-block">
-            <path d="M190 183h72l14 14h-99Z" />
-            <path d="M182 198h91" />
-          </g>
-        </svg>
+        <img key={`swing-${hit}`} className="gavel-art gavel-art-swing" src={gavelSwingUrl} alt="" draggable={false} decoding="async" />
+        <img key={`impact-${hit}`} className="gavel-art gavel-art-impact" src={gavelImpactUrl} alt="" draggable={false} decoding="async" />
+        <span className="gavel-ground" />
       </span>
-      <span className="gavel-caption">点击试听落槌声</span>
+      <span className="gavel-caption">落槌 · 点击重放</span>
     </button>
   );
 }
@@ -171,7 +161,9 @@ const LinkifiedText = ({ text }: { text: string }) => {
 
 const normalizeOverviewForDisplay = (text: string, sources: number, admitted: number, total: number) => {
   const cleaned = stripMarkdownMedia(text || '').trim();
-  if (/(?:数据组合|证据)相似度|(?:相似度为?|similarity)\s*\d+\s*%/i.test(cleaned)) {
+  const statedAdmission = cleaned.match(/正式证据(?:组)?[（(]?\s*(\d+)/)?.[1];
+  if (/(?:数据组合|证据)相似度|(?:相似度为?|similarity)\s*\d+\s*%/i.test(cleaned)
+    || (statedAdmission !== undefined && Number(statedAdmission) !== admitted)) {
     return `已完成 ${sources} 个候选源核查；${admitted} 组正式查证，${Math.max(0, total - admitted)} 条线索未准入。相似度仅用于检索排序，不代表证据强度。`;
   }
   return cleaned;
@@ -182,6 +174,10 @@ const plainFpType = (ty?: string) =>
   ({ weird_term: '异常用词', rare_case: '冷门案例', data_combo: '数据组合', analogy: '独特类比', joke: '专属玩笑', ordering: '罕见排序', other: '其他特征' } as Record<string, string>)[ty || ''] || ty || '';
 const plainExam = (v?: string) =>
   ({ expression_copy: '独特表达复制', fact_relay: '事实转述（不构成定案依据）', generic_overlap: '宏观表达重合（不构成定案依据）', inconclusive: '无法判定' } as Record<string, string>)[v || ''] || '';
+const humanizeEvidenceDescription = (value: string) => stripMarkdownMedia(value)
+  .replace(/FP\d+S?\d*（([a-z_]+)）/g, (_match: string, type: string) => `指纹（${plainFpType(type)}）`)
+  .replace(/在 SRC(\d+) 命中/g, (_match: string, number: string) => `在候选源${number}中命中`)
+  .replace(/← SRC(\d+)/g, (_match: string, number: string) => `← 候选源${number}`);
 
 export function App(): React.ReactElement {
   const [tab, setTabState] = useState<Tab>(() => {
@@ -346,7 +342,7 @@ export function App(): React.ReactElement {
       const { createGlmProvider } = await import('../providers/glm');
       const { createOpenAiCompatProvider, createJinaFetcher } = await import('../providers/openai-compat');
       const { createDeepSeekProvider, createGeminiProvider } = await import('../providers/multi');
-      const { createSerperSearch } = await import('../providers/serper');
+      const { createSerperSearch, beginSearchCase } = await import('../providers/serper');
       let provider;
       if (s.kind === 'glm') {
         provider = createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model, searchModel: s.searchModel || undefined });
@@ -367,7 +363,7 @@ export function App(): React.ReactElement {
             return await serper.search(query);
           } catch (e: any) {
             if (String(e.message).includes('SHARED_QUOTA_EXCEEDED')) {
-              pushLog('检索', '本庭共享搜索额度已用尽（每案 24 次）。可在设置中填入自己的 Serper Key（serper.dev 免费注册），或切换为主模型内置检索。');
+              pushLog('检索', '本案共享搜索额度已用尽（60 次）。可在设置中填入自己的 Serper Key（应用不再限次），或切换为主模型内置检索。');
             }
             throw e;
           }
@@ -453,13 +449,23 @@ export function App(): React.ReactElement {
           throw new Error('__MENTAL_HYGIENE__');
         }
       }
+      beginSearchCase(cf.caseId);
       setRunning((r) => (r ? { ...r, stageIndex: 1 } : r));
       await pipeline.investigation(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 2, fingerprints: cf.fingerprints.length } : r));
       await pipeline.discovery(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
       await transcribeCandidates(cf, rt, s);
-      const evidence = await pipeline.crossExamination(cf, rt);
+      let evidence = await pipeline.crossExamination(cf, rt);
+      if (pipeline.shouldSupplementEvidence(evidence, rt.sources)) {
+        const added = await pipeline.supplementalDiscovery(cf, rt, evidence);
+        if (added > 0) {
+          setRunning((r) => (r ? { ...r, stageIndex: 2, sources: [...rt.sources] } : r));
+          await transcribeCandidates(cf, rt, s);
+          setRunning((r) => (r ? { ...r, stageIndex: 3 } : r));
+          evidence = await pipeline.crossExamination(cf, rt);
+        }
+      }
       // 对质证据先完整落位，再进入异议演出；宣判阶段只在演出结束后点亮。
       setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
 
@@ -779,13 +785,14 @@ function VerdictView(props: {
 }): React.ReactElement {
   const { doc, onExportHtml, onExportJson, exporting } = props;
   const v = doc.verdict;
-  const admittedCount = doc.admission?.admitted ?? doc.evidence.filter(isAdmissibleEvidence).length;
+  const courtEvidence = useMemo(() => normalizeEvidenceForSources(doc.evidence, doc.sources), [doc.evidence, doc.sources]);
+  const admittedCount = courtEvidence.filter(isAdmissibleEvidence).length;
   const requiredCount = doc.admission?.required ?? MIN_ADMISSIBLE_EVIDENCE_GROUPS;
   const displayWord = admittedCount < requiredCount && !['休庭', '不予受理'].includes(v.word) ? '不足立案' : v.word;
   const displayRule = displayWord === '不足立案'
     ? `正式证据仅 ${admittedCount} 组，未达到 ${requiredCount} 组立案门槛；现有内容仅作线索展示，不出具倾向性裁决`
     : v.rule;
-  const overviewText = normalizeOverviewForDisplay(String((doc as any).overview || ''), doc.sources.length, admittedCount, doc.evidence.length);
+  const overviewText = normalizeOverviewForDisplay(String((doc as any).overview || ''), doc.sources.length, admittedCount, courtEvidence.length);
   const visibleLimits = doc.limits.filter((item) => !/^\s*【外界指控】/.test(String(item)));
   return (
     <div className="court-flow verdict-flow">
@@ -844,8 +851,8 @@ function VerdictView(props: {
         </table>
 
         {(() => {
-          const positive = doc.evidence.filter((e: any) => isAdmissibleEvidence(e));
-          const negative = doc.evidence.filter((e: any) => !isAdmissibleEvidence(e));
+          const positive = courtEvidence.filter((e: any) => isAdmissibleEvidence(e));
+          const negative = courtEvidence.filter((e: any) => !isAdmissibleEvidence(e));
           return (
             <>
               {overviewText && (
@@ -909,7 +916,7 @@ function VerdictView(props: {
             {e.examVerdict && e.examVerdict !== 'expression_copy' && (
               <div className="hint" style={{ marginTop: 4 }}>本条性质：{plainExam(e.examVerdict)}</div>
             )}
-            <div style={{ fontSize: 13.5 }}>{stripMarkdownMedia(e.description).replace(/FP\d+S?\d*（([a-z_]+)）/g, (_m: string, ty: string) => `指纹（${plainFpType(ty)}）`).replace(/在 SRC(\d+) 命中/g, (_m: string, n: string) => `在候选源${n}中命中`).replace(/← SRC(\d+)/g, (_m: string, n: string) => `← 候选源${n}`)}</div>
+            <div style={{ fontSize: 13.5 }}>{humanizeEvidenceDescription(e.description)}</div>
             {e.examNote && <div className="hint" style={{ marginTop: 4 }}>检定理由：{e.examNote}</div>}
             {(e.detail as any)?.macro && Array.isArray((e.detail as any).mappings) && ((e.detail as any).mappings).length > 0 && (
               <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.8, borderLeft: '2px solid var(--line, #ccc)', paddingLeft: 10 }}>
@@ -975,8 +982,18 @@ function VerdictView(props: {
                         <strong>{e.plainTitle || e.kind}</strong>
                         <span>{evidenceExclusionReason(e)}</span>
                       </div>
-                      <p>{stripMarkdownMedia(e.description)}</p>
+                      <p>{humanizeEvidenceDescription(e.description)}</p>
+                      {e.examNote && <p className="clue-review">检定理由：{e.examNote}</p>}
                       {e.sourceTitle && <a href={e.sourceUrl} target="_blank" rel="noreferrer">核验《{e.sourceTitle}》↗</a>}
+                      {(e.targetQuote || e.sourceQuote) && (
+                        <details className="clue-quote-details">
+                          <summary>{e.targetQuote && e.sourceQuote ? '查看校正后的双侧原句' : '查看可验证的原句'}</summary>
+                          <div className="clue-quote-grid">
+                            {e.targetQuote && <blockquote><b>被检内容</b>{stripMarkdownMedia(e.targetQuote)}</blockquote>}
+                            {e.sourceQuote && <blockquote><b>参照源文</b>{stripMarkdownMedia(e.sourceQuote)}</blockquote>}
+                          </div>
+                        </details>
+                      )}
                     </div>
                   ))}
                 </>
@@ -1193,6 +1210,13 @@ function Settings(): React.ReactElement {
       return { ...DEFAULT_SETTINGS } as typeof DEFAULT_SETTINGS | null;
     }
   });
+  const [savedSnapshot, setSavedSnapshot] = useState(() => {
+    try {
+      return localStorage.getItem('health-court.settings.v1') || JSON.stringify(DEFAULT_SETTINGS);
+    } catch {
+      return '';
+    }
+  });
   const [saved, setSaved] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
@@ -1204,26 +1228,25 @@ function Settings(): React.ReactElement {
   const save = async () => {
     const m = await import('../store/local');
     m.saveSettings(s);
+    setSavedSnapshot(JSON.stringify(s));
     setSaved(true);
     setTimeout(() => setSaved(false), 1800);
   };
-  // 输入即保存（onChange 后静默持久化，防"填了没点保存"）
-  const setAndSave = (patch: Partial<typeof s>) => {
-    setS((prev: any) => {
-      const next = { ...prev, ...patch };
-      import('../store/local').then((m) => m.saveSettings(next));
-      return next;
-    });
-  };
+  const dirty = JSON.stringify(s) !== savedSnapshot;
+  const modelReady = !!(s.apiKey && s.baseUrl && s.model);
+  const searchReady = s.searchProvider === 'provider'
+    ? s.kind === 'glm' || s.kind === 'gemini'
+    : true;
+  const audioReady = s.asrKind === 'glm' ? s.kind === 'glm' && !!s.apiKey : !!s.groqApiKey;
   const providerPresets = presetsForProvider(s.kind);
   const selectedPreset = providerPresets.find((preset) => preset.model === s.model && preset.baseUrl === s.baseUrl);
   const applyProvider = (kind: typeof s.kind) => {
     const preset = defaultPresetForProvider(kind);
-    setS({ ...s, kind, model: preset.model, baseUrl: preset.baseUrl, searchModel: kind === 'glm' ? s.searchModel : '' });
+    setS((previous) => previous ? { ...previous, kind, model: preset.model, baseUrl: preset.baseUrl, searchModel: kind === 'glm' ? previous.searchModel : '' } : previous);
   };
   const applyPreset = (presetId: string) => {
     const preset = providerPresets.find((item) => item.id === presetId);
-    if (preset) setS({ ...s, model: preset.model, baseUrl: preset.baseUrl });
+    if (preset) setS((previous) => previous ? { ...previous, model: preset.model, baseUrl: preset.baseUrl } : previous);
   };
 
   const test = async () => {
@@ -1304,6 +1327,12 @@ function Settings(): React.ReactElement {
         API Key 保存在当前浏览器的 localStorage 中；核查请求由浏览器直接发送至所选服务。请勿在公共设备上保存密钥。
       </div>
 
+      <div className="settings-status-grid" aria-label="配置状态">
+        <div className={modelReady ? 'is-ready' : 'is-missing'}><b>主模型</b><span>{modelReady ? '已配置' : '必填'}</span></div>
+        <div className={searchReady ? 'is-ready' : 'is-missing'}><b>搜索取证</b><span>{searchReady ? '可用' : '需改用 Serper'}</span></div>
+        <div className={audioReady ? 'is-ready' : 'is-optional'}><b>音频转录</b><span>{audioReady ? '已配置' : '按需配置'}</span></div>
+      </div>
+
       <div className="settings-group">
         <div className="settings-group-heading">
           <span>01</span>
@@ -1337,20 +1366,25 @@ function Settings(): React.ReactElement {
             <label>API Key</label>
             <input type="password" value={s.apiKey} onChange={(e) => setS({ ...s, apiKey: e.target.value })} placeholder="填入所选供应商的密钥" />
           </div>
-          <div className="field">
-            <label>接口地址（Base URL）</label>
-            <input value={s.baseUrl} onChange={(e) => setS({ ...s, baseUrl: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>主模型名称（可手动修改）</label>
-            <input value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} spellCheck={false} />
-          </div>
-          {s.kind === 'glm' && (
-            <div className="field">
-              <label>检索模型（选填）</label>
-              <input value={s.searchModel} onChange={(e) => setS({ ...s, searchModel: e.target.value })} placeholder="留空则使用主模型" />
+          <details className="settings-advanced field-wide">
+            <summary>高级连接参数</summary>
+            <div className="settings-grid settings-grid-nested">
+              <div className="field">
+                <label>接口地址（Base URL）</label>
+                <input value={s.baseUrl} onChange={(e) => setS({ ...s, baseUrl: e.target.value })} />
+              </div>
+              <div className="field">
+                <label>主模型名称</label>
+                <input value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })} spellCheck={false} />
+              </div>
+              {s.kind === 'glm' && (
+                <div className="field field-wide">
+                  <label>检索模型（选填）</label>
+                  <input value={s.searchModel} onChange={(e) => setS({ ...s, searchModel: e.target.value })} placeholder="留空则使用主模型" />
+                </div>
+              )}
             </div>
-          )}
+          </details>
         </div>
       </div>
 
@@ -1361,34 +1395,43 @@ function Settings(): React.ReactElement {
         </div>
         <div className="settings-grid">
           <div className="field field-wide">
-            <label>搜索通道</label>
-            <select value={s.searchProvider} onChange={(e) => setS({ ...s, searchProvider: e.target.value as any })}>
-              <option value="serper">Serper（默认，共享额度每案 24 次）</option>
-              <option value="provider">主模型内置检索（GLM / Gemini）</option>
-            </select>
-            <div className="desc">DeepSeek 与 OpenAI 兼容端点没有内置检索时，请使用 Serper。</div>
+            <label>选择搜索通道</label>
+            <div className="settings-choice-grid">
+              <button type="button" className={s.searchProvider === 'serper' ? 'is-selected' : ''} onClick={() => setS({ ...s, searchProvider: 'serper' })}>
+                <b>Serper</b><span>默认；共享 Key 每案 60 次。填自有 Key 后应用不限制次数。</span>
+              </button>
+              <button type="button" className={s.searchProvider === 'provider' ? 'is-selected' : ''} onClick={() => setS({ ...s, searchProvider: 'provider' })}>
+                <b>主模型内置检索</b><span>仅适合 GLM / Gemini；具体额度由模型账户决定。</span>
+              </button>
+            </div>
+            {!searchReady && <div className="settings-inline-warning">当前供应商没有可用的内置检索，请选择 Serper。</div>}
           </div>
-          <div className="field">
-            <label>Serper API Key（选填）</label>
-            <input type="password" value={s.serperApiKey} onChange={(e) => setAndSave({ serperApiKey: e.target.value })} placeholder="共享额度不足时再填写" />
-            <div className="desc"><a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a></div>
-          </div>
-          <div className="field">
-            <label>Jina API Key（选填）</label>
-            <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="留空使用公开额度" />
-          </div>
+          {s.searchProvider === 'serper' && (
+            <div className="field field-wide">
+              <label>自有 Serper API Key（选填）</label>
+              <input type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="留空使用共享 Key；高频核查建议填写" />
+              <div className="desc"><a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a> · 自有 Key 仅受服务商账户额度约束。</div>
+            </div>
+          )}
+          <details className="settings-advanced field-wide">
+            <summary>页面抓取高级项</summary>
+            <div className="field settings-single-field">
+              <label>Jina API Key（选填）</label>
+              <input type="password" value={s.jinaApiKey} onChange={(e) => setS({ ...s, jinaApiKey: e.target.value })} placeholder="留空使用公开额度" />
+            </div>
+          </details>
         </div>
       </div>
 
-      <div className="settings-group">
-        <div className="settings-group-heading">
+      <details className="settings-group settings-optional-group">
+        <summary className="settings-group-heading">
           <span>03</span>
-          <div><h3>音频转录</h3><p>仅在提交播客单集且页面没有正文时使用。</p></div>
-        </div>
+          <div><h3>音频转录 <em>按需</em></h3><p>仅在播客页面没有正文时启用；点击展开配置。</p></div>
+        </summary>
         <div className="settings-grid">
           <div className="field field-wide">
             <label>转录服务</label>
-            <select value={s.asrKind} onChange={(e) => setAndSave({ asrKind: e.target.value as any })}>
+            <select value={s.asrKind} onChange={(e) => setS({ ...s, asrKind: e.target.value as any })}>
               <option value="groq">Groq · whisper-large-v3</option>
               <option value="glm">GLM ASR（复用主模型 Key）</option>
             </select>
@@ -1396,21 +1439,22 @@ function Settings(): React.ReactElement {
           {s.asrKind === 'groq' && (
             <div className="field field-wide">
               <label>Groq API Key</label>
-              <input type="password" value={s.groqApiKey} onChange={(e) => setAndSave({ groqApiKey: e.target.value })} placeholder="在 console.groq.com 创建" />
+              <input type="password" value={s.groqApiKey} onChange={(e) => setS({ ...s, groqApiKey: e.target.value })} placeholder="在 console.groq.com 创建" />
               <div className="desc"><a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">打开 Groq API Keys ↗</a></div>
             </div>
           )}
         </div>
-      </div>
+      </details>
 
       <div className="settings-actions">
-        <button className="btn btn-primary" onClick={save} disabled={!s.apiKey}>
-          保存
+        <button className="btn btn-primary" onClick={save} disabled={!s.apiKey || !dirty}>
+          {dirty ? '保存设置' : '已保存'}
         </button>
         <button className="btn btn-ghost" onClick={test} disabled={testing || !s.apiKey}>
           {testing ? '检测中…' : '连通性自检'}
         </button>
         {saved && <span className="save-state" role="status">已保存 ✓</span>}
+        {!saved && dirty && <span className="save-state is-dirty" role="status">有未保存更改</span>}
       </div>
       {testResult && (
         <div className="connection-result" role="status">

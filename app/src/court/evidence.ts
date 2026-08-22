@@ -107,15 +107,68 @@ export function evidenceExclusionReason(e: EvidenceItem): string | null {
   const groupedSourceCount = Array.isArray((e.detail as any)?.alsoSources)
     ? (e.detail as any).alsoSources.length
     : Number((e.detail as any)?.independentSourceCount || 0);
+  if ((e.detail as any)?.sourcePostdatesTarget) return '候选源晚于被检内容，不能作为其来源依据';
   if (looksLikeSharedNewsFact(e, groupedSourceCount)) return '属于多家媒体共有的近期新闻基本事实';
   const relation = (e.detail as any)?.subjectRelation;
   if (relation === 'same_topic' || relation === 'unrelated') return '候选源与被检主体仅同题或无直接关系';
+  if ((e.level === 'E2' || e.level === 'E3' || e.level === 'E4') && (!relation || relation === 'unknown')) {
+    return '候选源与被检主体的关系尚未完成确认';
+  }
   if ((e.level === 'E3' || e.level === 'E4') && (!e.targetQuote || !e.sourceQuote)) return '缺少可复核的双侧原文引文';
   if (e.targetQuoteLocated === false || e.sourceQuoteLocated === false) return '原文引文未通过定位校验';
   if ((e.level === 'E2' || e.level === 'E3') && e.examVerdict && e.examVerdict !== 'expression_copy') {
     return e.examVerdict === 'fact_relay' ? '属于公共事实转述' : '未确认独特表达对应';
   }
   return null;
+}
+
+/**
+ * 为旧案卷补齐新版准入所需的来源事实，并优先恢复精确命中句。
+ * 旧版曾把“扩展上下文”回写进引文字段，短前缀可能命中同页更早段落；
+ * hitPhrase* 才是当时通过定位校验的核心对比句。
+ */
+export function normalizeEvidenceForSources<T extends EvidenceItem>(evidence: T[], sources: Array<{ id: string; reversed?: boolean; subjectRelation?: string }>): T[] {
+  const markdownLinksToText = (value: string) => value.replace(/\[([^\]]+)]\([^)]+\)/g, '$1');
+  const verifiedQuote = (hit: string, stored: string | undefined, context: unknown): string | undefined => {
+    if (!hit) return stored;
+    if (typeof context !== 'string' || !context.trim()) return hit;
+    const plainContext = markdownLinksToText(context);
+    if (plainContext.includes(hit)) return hit;
+    if (stored && plainContext.includes(stored)) return stored;
+    const hitSentences = hit.split(/(?<=[。！？.!?])\s*/).map((part) => part.trim()).filter(Boolean);
+    if (hitSentences.length > 1) return undefined;
+    const terms = (value: string) => value.toLowerCase().match(/[a-z][a-z’'-]{3,}|[\u4e00-\u9fff]{2,6}/g) || [];
+    const hitTerms = new Set(terms(hit));
+    const rankedSentences = plainContext
+      .split(/(?<=[。！？.!?])\s*/)
+      .map((sentence) => ({
+        sentence: sentence.trim(),
+        score: [...new Set(terms(sentence))].filter((term) => hitTerms.has(term)).length,
+      }))
+      .filter((item) => item.sentence.length >= 24 && item.score >= 2)
+      .sort((a, b) => b.score - a.score || b.sentence.length - a.sentence.length);
+    return rankedSentences[0]?.sentence;
+  };
+  return evidence.map((item) => {
+    const source = sources.find((candidate) => candidate.id === item.sourceId);
+    const detail = { ...(item.detail || {}) } as Record<string, unknown>;
+    if (source) {
+      detail.sourcePostdatesTarget = !!source.reversed;
+      detail.subjectRelation = source.subjectRelation || detail.subjectRelation || 'unknown';
+    }
+    const exactTarget = typeof detail.hitPhraseTarget === 'string' ? detail.hitPhraseTarget.trim() : '';
+    const exactSource = typeof detail.hitPhraseSource === 'string' ? detail.hitPhraseSource.trim() : '';
+    const targetQuote = verifiedQuote(exactTarget, item.targetQuote, detail.contextTarget);
+    const sourceQuote = verifiedQuote(exactSource, item.sourceQuote, detail.contextSource);
+    return {
+      ...item,
+      targetQuote,
+      sourceQuote,
+      targetQuoteLocated: targetQuote ? item.targetQuoteLocated : false,
+      sourceQuoteLocated: sourceQuote ? item.sourceQuoteLocated : false,
+      detail,
+    };
+  });
 }
 
 export function isAdmissibleEvidence(e: EvidenceItem): boolean {
@@ -128,7 +181,7 @@ export function countAdmissibleEvidenceGroups(evidence: EvidenceItem[]): number 
 
 /** 多家媒体同步报道同一近期事件时，日期、人名、事件名和官方文件名属于公共新闻事实。 */
 export function looksLikeSharedNewsFact(e: EvidenceItem, independentSourceCount: number): boolean {
-  if (independentSourceCount < 3 || e.level !== 'E3') return false;
+  if (independentSourceCount < 2 || e.level !== 'E3') return false;
   const type = String((e.detail as any)?.fingerprintType || (e.detail as any)?.overlapType || '');
   if (!/data_combo|rare_case/.test(type) || (e.detail as any)?.transcriptionError) return false;
   const q = `${e.targetQuote || ''} ${e.description || ''}`;

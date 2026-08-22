@@ -49,6 +49,8 @@ export interface CourtRuntime {
   processLog?: StageLog[];
   /** 经主体与报道体例双重过滤的外界指控。 */
   controversyNotes?: { title: string; url: string; snippet?: string }[];
+  /** 检索轮次审计；写入判决书，避免“多轮”只有日志没有结构化记录。 */
+  searchAudit?: { rounds: number; queries: number; supplementalQueries: number; supplementalSources: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -363,13 +365,31 @@ function inferProgramName(cf: CaseFile): string | undefined {
   return undefined;
 }
 
+/** 只接受完整命中或正文内唯一长片段命中，避免相同句首把引文错移到更早段落。 */
+function locateExactOrUniqueAnchor(quote: string, text: string): number {
+  if (!quote || !text) return -1;
+  const exact = text.indexOf(quote);
+  if (exact >= 0) return exact;
+  const anchors = quote
+    .split(/(?<=[。！？.!?])\s*/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 28)
+    .sort((a, b) => b.length - a.length);
+  for (const anchor of anchors) {
+    const index = text.indexOf(anchor);
+    if (index >= 0 && index === text.lastIndexOf(anchor)) return index;
+  }
+  return -1;
+}
+
 // ---------------------------------------------------------------------------
 // 阶段三：检索
 // ---------------------------------------------------------------------------
 
 export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSources?: number }): Promise<CaseFile> {
   // v2.2：三轮足量检索（R0标题英文化 + R1主题 + R2指纹精确 + R3线报），目标 ≥8 候选源
-  const maxSources = opts?.maxSources ?? 10;
+  const maxSources = opts?.maxSources ?? 14;
+  rt.searchAudit = { rounds: 1, queries: 0, supplementalQueries: 0, supplementalSources: 0 };
   // v2.2.12（ODCX8E 休庭案根因）：检索式生成必须容错——LLM 单点失败不能导致全案零检索。
   // 失败时用确定性回退：画像英文实体 + 指纹英文检索词直查。
   let q: any = { queries: {} };
@@ -478,6 +498,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     if (quoteFps.length) rt.log('检索', `R2c 原文精确检索式 ×${quoteFps.length}（指纹引文逐字，找转载/抄袭页）`);
   }
   rt.log('检索', `构造检索式 ${queries.length} 条，开始多轮搜索（目标候选 ≥8）…`);
+  rt.searchAudit.queries = queries.length;
 
   const seen = new Set<string>();
   // v2.2.7 跨店面同单集去重键（AA3F00 案：TRIH Part1 的 us/cm 两店同 episode id 重复入卷占两席）
@@ -559,7 +580,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   rt.log('检索', `卫生过滤：${candidates.length} → ${filtered.length}（镜像/壳页 ${rejected.length} 个转归属链）`);
 
   // —— v2.2 LLM 相似度排序（批量评分）：目标画像 vs 候选标题+摘要 ——
-  const pool = filtered.slice(0, 24);
+  const pool = filtered.slice(0, 40);
   const scored: typeof filtered & { sim?: number; why?: string }[] = filtered.slice(0, 0);
   let rankList: { idx: number; sim: number; why: string; relation: SourceDoc['subjectRelation'] }[] = [];
   if (pool.length) {
@@ -693,9 +714,192 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       }
     }
   } catch { /* 系列扩展失败不阻塞 */ }
+  await verifySourceRelations(cf, rt, fetched);
   rt.sources = fetched;
   rt.rejectedSources = rejected;
   return cf;
+}
+
+/**
+ * 对高相似候选做第二次主体关系核验。检索相关性不是证据强度；晚于目标的页面
+ * 直接转为“同一公共事件”，其余候选必须用正文摘要再次判断是否可能是具体来源。
+ */
+async function verifySourceRelations(cf: CaseFile, rt: CourtRuntime, sources: SourceDoc[]): Promise<void> {
+  const targetDate = cf.target.date ? Date.parse(cf.target.date) : NaN;
+  for (const source of sources) {
+    const sourceDate = source.date ? Date.parse(source.date) : NaN;
+    source.reversed = source.reversed || (!Number.isNaN(targetDate) && !Number.isNaN(sourceDate) && sourceDate > targetDate);
+    if (source.reversed) {
+      source.subjectRelation = 'same_event';
+      source.subjectRelationNote = '候选页发布日期晚于被检内容，只能作为同一事件的后续报道。';
+    }
+  }
+  const candidates = sources
+    .filter((source) => !source.reversed)
+    .filter((source) => (source.similarity ?? 0) >= 70 || !source.subjectRelation || source.subjectRelation === 'unknown' || source.subjectRelation === 'direct_source')
+    .slice(0, 14);
+  if (!candidates.length) return;
+  rt.log('检索', `主体关系二次核验：复查 ${candidates.length} 个高相关候选，区分直接来源、同一事件与同题材料…`);
+  try {
+    const result = await chatJson<any>(
+      rt.provider.chat,
+      'You perform a SECOND-PASS source-relationship verification. A high retrieval score is not evidence. Classify each candidate as direct_source only when its dated content predates the target and contains concrete claims, examples, ordering, or wording that the target could plausibly reuse. same_event means independent reporting of the same recent public event; same_topic means only thematic overlap; unrelated means wrong subject; unknown means the available text cannot establish identity. Output every idx as JSON: {"checked":[{"idx":0,"relation":"direct_source|same_event|same_topic|unrelated|unknown","note":"short Chinese reason"}]}.',
+      `被检内容：${cf.target.title}\n发布日期：${cf.target.date || '未知'}\n节目/作者：${cf.target.author || '未知'}\n核心论点：${(cf.profile?.coreClaims || []).slice(0, 6).join('；')}\n\n待复核候选：\n${candidates.map((source, index) => `${index}. 标题=${source.title}\n日期=${source.date || '未知'}\n初判=${source.subjectRelation || 'unknown'}；检索分=${source.similarity ?? '无'}\n材料=${truncateSmart(source.fullText || source.snippet || '', 1400)}`).join('\n\n')}`,
+      { maxTokens: 2400 },
+    );
+    const checked = Array.isArray(result.checked) ? result.checked : [];
+    const resolved = new Set<number>();
+    for (const item of checked) {
+      const index = Number(item.idx);
+      const source = candidates[index];
+      if (!source) continue;
+      resolved.add(index);
+      const relation = String(item.relation || 'unknown');
+      source.subjectRelation = (['direct_source', 'same_event', 'same_topic', 'unrelated', 'unknown'].includes(relation) ? relation : 'unknown') as SourceDoc['subjectRelation'];
+      source.subjectRelationNote = `二次核验：${String(item.note || '').slice(0, 180)}`;
+    }
+    candidates.forEach((source, index) => {
+      if (resolved.has(index)) return;
+      source.subjectRelation = 'unknown';
+      source.subjectRelationNote = '二次核验未返回该候选，保守标为关系待核。';
+    });
+  } catch (error: any) {
+    for (const source of candidates) {
+      if (source.subjectRelation === 'direct_source') source.subjectRelation = 'unknown';
+      source.subjectRelationNote = `二次核验未完成：${String(error?.message || error).slice(0, 100)}`;
+    }
+    rt.log('检索', '主体关系二次核验失败：高相关候选保守标为关系待核，不进入正式证据。');
+  }
+}
+
+/** 当首轮已有具体相似线索但正式证据不足时，至多追加一轮证据导向检索。 */
+export function shouldSupplementEvidence(evidence: EvidenceItem[], sources: SourceDoc[]): boolean {
+  if (sources.length >= 22) return false;
+  const underThreshold = countAdmissibleEvidenceGroups(evidence) < MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+  const hasConcreteClue = evidence.some((item) => item.level === 'E2' || item.level === 'E3' || item.level === 'E4');
+  const hasHighSimilarityCandidate = sources.some((source) => (source.similarity ?? 0) >= 75);
+  return hasHighSimilarityCandidate || (underThreshold && hasConcreteClue);
+}
+
+export async function supplementalDiscovery(
+  cf: CaseFile,
+  rt: CourtRuntime,
+  evidence: EvidenceItem[],
+  opts?: { maxQueries?: number; maxSources?: number },
+): Promise<number> {
+  const maxQueries = opts?.maxQueries ?? 12;
+  const maxSources = opts?.maxSources ?? 8;
+  const admitted = countAdmissibleEvidenceGroups(evidence);
+  rt.log('检索', `首轮正式证据 ${admitted}/${MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组；存在具体相似线索，启动一次补充取证。`);
+
+  const fallbackQueries: string[] = [];
+  for (const fingerprint of cf.fingerprints.slice(0, 8)) {
+    const exact = fingerprint.targetQuote.replace(/\s+/g, ' ').trim();
+    if (exact.length >= 18) fallbackQueries.push(`"${exact.slice(Math.floor(exact.length * 0.15), Math.floor(exact.length * 0.15) + 34)}"`);
+    const keywords = [...fingerprint.searchKeywordsEn, ...fingerprint.searchKeywordsZh].filter(Boolean).slice(0, 3).join(' ');
+    if (keywords.length >= 8) fallbackQueries.push(`${keywords} transcript source`);
+  }
+  let generatedQueries: string[] = [];
+  try {
+    const generated = await chatJson<any>(
+      rt.provider.chat,
+      'Generate 6-12 EVIDENCE-GUIDED follow-up web searches after an inconclusive source check. Seek an earlier original episode/article/book/transcript, not more generic coverage of the topic. Use distinctive phrases, named example combinations, episode titles, and publication/transcript intent terms. Queries may be Chinese or English as appropriate. Avoid duplicating the listed prior queries. Output JSON only: {"queries":["..."]}.',
+      `被检标题：${cf.target.title}\n日期：${cf.target.date || '未知'}\n尚未充分验证的具体线索：\n${evidence.filter((item) => item.level !== 'E1').slice(0, 8).map((item) => `${item.plainTitle || item.kind}：${item.description}\n目标句：${(item.detail as any)?.hitPhraseTarget || item.targetQuote || ''}`).join('\n')}\n\n已有高相关候选：\n${rt.sources.filter((source) => (source.similarity ?? 0) >= 70).slice(0, 8).map((source) => `${source.title}｜${source.date || '日期未知'}｜${source.subjectRelation || 'unknown'}`).join('\n')}\n\n原检索式：${rt.sources.map((source) => source.viaQuery).filter(Boolean).slice(0, 18).join('；')}`,
+      { maxTokens: 900 },
+    );
+    generatedQueries = (Array.isArray(generated.queries) ? generated.queries : []).map(String);
+  } catch {
+    rt.log('检索', '补充检索式生成失败，改用指纹逐条精确检索。');
+  }
+  const previousQueries = new Set(rt.sources.map((source) => String(source.viaQuery || '').replace(/^.*?：/, '').trim()).filter(Boolean));
+  const queries = [...generatedQueries, ...fallbackQueries]
+    .map((query) => query.trim())
+    .filter((query) => query.length >= 8 && !previousQueries.has(query))
+    .filter((query, index, list) => list.indexOf(query) === index)
+    .slice(0, maxQueries);
+  if (!queries.length) return 0;
+  if (!rt.searchAudit) rt.searchAudit = { rounds: 1, queries: 0, supplementalQueries: 0, supplementalSources: 0 };
+  rt.searchAudit.rounds = 2;
+  rt.searchAudit.queries += queries.length;
+  rt.searchAudit.supplementalQueries = queries.length;
+
+  const knownUrls = new Set(rt.sources.map((source) => source.url));
+  const candidates: Array<{ title: string; url: string; snippet: string; date?: string; query: string }> = [];
+  for (const query of queries) {
+    try {
+      const { docs } = await rt.provider.search(query);
+      rt.log('检索', `[补充取证] "${query.slice(0, 54)}" → ${docs.length} 条`);
+      for (const doc of docs) {
+        if (!doc.url || knownUrls.has(doc.url) || candidates.some((item) => item.url === doc.url)) continue;
+        const hygiene = isMirrorOrGenericSource(
+          { title: doc.title, url: doc.url, snippet: doc.snippet },
+          { title: cf.target.title, url: cf.input.url, author: cf.target.author },
+        );
+        if (hygiene.generic || hygiene.mirror) continue;
+        candidates.push({ title: doc.title, url: doc.url, snippet: doc.snippet, date: doc.date, query });
+      }
+    } catch (error: any) {
+      rt.log('检索', `[补充取证] 检索失败：${String(error?.message || error).slice(0, 80)}`);
+    }
+  }
+  if (!candidates.length) {
+    rt.log('检索', '补充取证未发现新的可访问候选源。');
+    return 0;
+  }
+
+  let ranked = candidates.slice(0, 36).map((candidate, index) => ({ candidate, index, sim: 0 }));
+  try {
+    const result = await chatJson<any>(
+      rt.provider.chat,
+      'Rank follow-up candidates for concrete source-dependency verification. sim is retrieval relevance only. Prefer candidates with a specific episode/work/transcript identity and concrete examples; penalize generic same-event news. Output JSON only: {"ranked":[{"idx":0,"sim":0-100}]}.',
+      `目标：${cf.target.title}\n核心论点：${(cf.profile?.coreClaims || []).slice(0, 5).join('；')}\n候选：\n${ranked.map(({ candidate, index }) => `${index}. ${candidate.title}｜${candidate.date || '日期未知'}｜${candidate.snippet.slice(0, 180)}`).join('\n')}`,
+      { maxTokens: 1500 },
+    );
+    const scores = new Map<number, number>(
+      (Array.isArray(result.ranked) ? result.ranked : []).map((item: any): [number, number] => [
+        Number(item.idx),
+        Math.max(0, Math.min(100, Number(item.sim) || 0)),
+      ]),
+    );
+    ranked = ranked.map((item) => ({ ...item, sim: scores.get(item.index) || 0 })).sort((a, b) => b.sim - a.sim);
+  } catch { /* 保持检索顺序 */ }
+
+  const targetDate = cf.target.date ? Date.parse(cf.target.date) : NaN;
+  const added: SourceDoc[] = [];
+  for (const { candidate, sim } of ranked.slice(0, maxSources + 5)) {
+    if (added.length >= maxSources) break;
+    let fullText = '';
+    let title = candidate.title;
+    try {
+      const fetched = await rt.fetcher.fetchDoc(candidate.url);
+      fullText = stripPageChrome(fetched.text);
+      title = fetched.title || title;
+    } catch { /* 摘要仍可参与主体复核，但不会产出引文证据 */ }
+    if (fullText && fullText.length < SOURCE_QUALITY_GATE.minTextChars) continue;
+    if (/try searching|no results|page not found|not found|404/i.test(title)) continue;
+    const sourceDate = candidate.date ? Date.parse(candidate.date) : NaN;
+    added.push({
+      id: `SRC${rt.sources.length + added.length + 1}`,
+      title,
+      url: candidate.url,
+      date: candidate.date,
+      snippet: candidate.snippet,
+      fullText,
+      fetchedAt: new Date().toISOString(),
+      partial: fullText.length < 800,
+      reversed: !Number.isNaN(targetDate) && !Number.isNaN(sourceDate) && sourceDate > targetDate,
+      origin: 'search',
+      viaQuery: `R7 补充取证：${candidate.query}`,
+      similarity: sim || undefined,
+      subjectRelation: 'unknown',
+    });
+  }
+  if (!added.length) return 0;
+  await verifySourceRelations(cf, rt, added);
+  rt.sources.push(...added);
+  rt.searchAudit.supplementalSources = added.length;
+  rt.log('检索', `补充取证完成：新增 ${added.length} 个候选源，回到对质阶段复核全部材料。`);
+  return added.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,10 +1256,9 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
       quote = stripMarkdownMedia(quote);
       text = stripMarkdownMedia(text);
       if (!quote || !text) return undefined;
-      const probe = quote.slice(0, Math.min(16, quote.length));
-      const i = text.indexOf(probe);
+      const i = locateExactOrUniqueAnchor(quote, text);
       if (i < 0) return undefined; // 无法定位→不披露（宁缺毋滥）
-      const qEnd = i + quote.length <= text.length ? i + quote.length : i + probe.length;
+      const qEnd = Math.min(text.length, i + quote.length);
       const start = Math.max(0, i - 200);
       const end = Math.min(text.length, qEnd + 200);
       return text.slice(start, end);
@@ -1079,12 +1282,11 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     if (disclosed) rt.log('对质', `上下文披露：${disclosed} 条证据附带前后文（已机械校验逐字真实）`);
   }
 
-  // v3.1 引文上下文扩展（8E9GJP 案用户要求：截取需相对完整）：
-  // 指纹句前后各扩一句（句读边界），让读者看到语境；源引文同样扩一句
+  // v3.4 引文与上下文分离：扩展段只存入 detail，不覆盖通过定位的核心引文。
   {
     const expand = (q: string, text: string): string => {
       if (!q || !text) return q;
-      const i = text.indexOf(q.slice(0, 12));
+      const i = locateExactOrUniqueAnchor(q, text);
       if (i < 0) return q;
       // 前扩：从 i 往前找句末标点（。！？.!?），最多 120 字
       let start = i;
@@ -1103,11 +1305,19 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     for (const ev of evidence) {
       if (ev.level !== 'E3' && ev.level !== 'E4') continue;
       const src = rt.sources.find((x) => x.id === ev.sourceId);
-      (ev.detail as any) = { ...(ev.detail || {}), hitPhraseTarget: ev.targetQuote, hitPhraseSource: ev.sourceQuote };
-      if (ev.targetQuote) ev.targetQuote = expand(ev.targetQuote, cf.target.text);
-      if (ev.sourceQuote && src?.fullText) ev.sourceQuote = expand(ev.sourceQuote, src.fullText);
+      const hitPhraseTarget = (ev.detail as any)?.hitPhraseTarget || ev.targetQuote;
+      const hitPhraseSource = (ev.detail as any)?.hitPhraseSource || ev.sourceQuote;
+      (ev.detail as any) = {
+        ...(ev.detail || {}),
+        hitPhraseTarget,
+        hitPhraseSource,
+        expandedTargetQuote: hitPhraseTarget ? expand(hitPhraseTarget, cf.target.text) : undefined,
+        expandedSourceQuote: hitPhraseSource && src?.fullText ? expand(hitPhraseSource, src.fullText) : undefined,
+      };
+      ev.targetQuote = hitPhraseTarget;
+      ev.sourceQuote = hitPhraseSource;
     }
-    rt.log('对质', '引文上下文扩展：指纹句已扩为完整句段（含前后语境）');
+    rt.log('对质', '引文定位校正：核心命中句与扩展上下文分栏保存，不再用短句首回写引文');
   }
 
   // v3.1（8E9GJP 案）：证据跨源聚合——同一目标引文被多源命中时合并为一条，
@@ -1173,7 +1383,12 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
       }
       ev.sourceUrl = url;
       ev.sourceTranscribed = !!s.transcribed;
-      (ev.detail as any) = { ...(ev.detail || {}), subjectRelation: s.subjectRelation || 'unknown' };
+      (ev.detail as any) = {
+        ...(ev.detail || {}),
+        subjectRelation: s.subjectRelation || 'unknown',
+        subjectRelationNote: s.subjectRelationNote,
+        sourcePostdatesTarget: !!s.reversed,
+      };
       if (Array.isArray((ev.detail as any).alsoSources)) {
         (ev.detail as any).alsoSources = (ev.detail as any).alsoSources.map((item: any) => {
           const source = rt.sources.find((candidate) => candidate.id === item.sourceId);
@@ -1379,6 +1594,7 @@ export interface VerdictDoc {
   debateRounds: { round: number; prosecution: string; defense: string }[];
   crossChecks: { evidenceId: string; risk: string; note: string }[];
   admission: { required: number; admitted: number; discovered: number; status: 'sufficient' | 'insufficient' };
+  searchAudit?: { rounds: number; queries: number; supplementalQueries: number; supplementalSources: number };
   externalClaims: { title: string; url: string; snippet?: string }[];
   disclaimer: string;
   namingFootnote: string;
@@ -1417,6 +1633,9 @@ export function buildVerdictDoc(
     limits.push('归属链说明：上方归属信息只证明该内容的发布渠道与署名情况，不构成原创性证明——正式发表渠道（期刊/出版社/作协网站）不做原创性核查，本庭的「卫生」与否只取决于证据本身');
   }
   limits.push(`指纹候选 ${cf.fingerprints.length} 个，检索候选源 ${rt.sources.length} 个（相似度排序，满分 100）；「未发现」不等于「证明清白」`);
+  if (rt.searchAudit) {
+    limits.push(`本案完成 ${rt.searchAudit.rounds} 轮、${rt.searchAudit.queries} 条检索式；补充取证新增 ${rt.searchAudit.supplementalSources} 个候选源。检索相关分只用于排序，不代表证据强度`);
+  }
   if (rt.rejectedSources?.length) {
     limits.push(`检索淘汰 ${rt.rejectedSources.length} 个候选：${rt.rejectedSources.slice(0, 6).map((r) => `${r.title.slice(0, 24)}（${r.reason}）`).join('；')}${rt.rejectedSources.length > 6 ? ' 等' : ''}`);
   }
@@ -1468,6 +1687,7 @@ export function buildVerdictDoc(
       discovered: evidenceN.length,
       status: admissionCount >= MIN_ADMISSIBLE_EVIDENCE_GROUPS ? 'sufficient' : 'insufficient',
     },
+    searchAudit: rt.searchAudit,
     externalClaims: cNotes || [],
     disclaimer: DISCLAIMER,
     namingFootnote: NAMING_FOOTNOTE,

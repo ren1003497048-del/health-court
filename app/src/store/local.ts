@@ -1,6 +1,6 @@
 // 设置与档案的 localStorage 存储（Key 只存用户浏览器，见 PRD §9）
 
-import { MIN_ADMISSIBLE_EVIDENCE_GROUPS, isAdmissibleEvidence } from '../court/evidence';
+import { MIN_ADMISSIBLE_EVIDENCE_GROUPS, isAdmissibleEvidence, normalizeEvidenceForSources } from '../court/evidence';
 
 export interface ProviderSettings {
   kind: 'glm' | 'openai-compat' | 'deepseek' | 'gemini';
@@ -99,7 +99,8 @@ export function loadArchiveMetas(): ArchiveEntryMeta[] {
     const obj = JSON.parse(raw) as Record<string, any>;
     return Object.values(obj)
       .map((v: any) => {
-        const admitted = (v?.evidence || []).filter(isAdmissibleEvidence).length;
+        const normalizedEvidence = normalizeEvidenceForSources(v?.evidence || [], v?.sources || []);
+        const admitted = normalizedEvidence.filter(isAdmissibleEvidence).length;
         const required = v?.admission?.required ?? MIN_ADMISSIBLE_EVIDENCE_GROUPS;
         const originalWord = v?.verdict?.word || v?.verdictWord || '?';
         const insufficient = admitted < required && !['休庭', '不予受理'].includes(originalWord);

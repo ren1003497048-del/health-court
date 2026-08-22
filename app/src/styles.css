@@ -1123,6 +1123,12 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
 .clue-card-head span { color: var(--ink-soft); font-size: 11.5px; }
 .clue-card p { margin: 6px 0; font-size: 13px; line-height: 1.8; }
 .clue-card a { font-size: 12px; }
+.clue-review { color: var(--ink-soft); }
+.clue-quote-details { margin-top: 9px; border-top: 1px dashed var(--line); padding-top: 7px; }
+.clue-quote-details summary { cursor: pointer; color: var(--blue); font-size: 12px; font-weight: 700; }
+.clue-quote-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.clue-quote-grid blockquote { margin: 0; padding: 10px 11px; background: #fff; border: 1px solid var(--line); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.clue-quote-grid b { display: block; margin-bottom: 5px; font-size: 10.5px; letter-spacing: .08em; }
 .external-claims { margin-top: 22px; padding-top: 2px; }
 .external-claims h3 { margin-bottom: 6px; }
 .external-claims article { padding: 10px 0; border-top: 1px solid var(--line); }
@@ -1160,4 +1166,140 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
   .gavel-motion,
   .gavel-splash,
   .gavel-block { animation: none !important; }
+}
+
+/* v3.4 落槌：透明位图分层演出。主体与冲击层均为高清 PNG，不依赖 SVG。 */
+.gavel-button {
+  width: min(340px, 92vw);
+  margin: 8px auto 10px;
+  gap: 2px;
+  overflow: visible;
+}
+.gavel-stage {
+  position: relative;
+  display: block;
+  width: 320px;
+  max-width: 100%;
+  height: 214px;
+  isolation: isolate;
+  overflow: visible;
+}
+.gavel-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform, opacity, filter;
+}
+.gavel-art-swing {
+  z-index: 2;
+  transform-origin: 73% 75%;
+  animation: gavel-bitmap-cycle 3s cubic-bezier(.62,.02,.28,1) infinite;
+  filter: drop-shadow(0 9px 8px rgba(28,26,23,.14));
+}
+.gavel-art-impact {
+  z-index: 1;
+  transform-origin: 72% 72%;
+  opacity: 0;
+  animation: gavel-impact-bitmap-cycle 3s ease-out infinite;
+  mix-blend-mode: multiply;
+}
+.gavel-ground {
+  position: absolute;
+  z-index: 0;
+  left: 43%;
+  right: 5%;
+  bottom: 22px;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgba(28,26,23,.7) 20%, rgba(28,26,23,.7) 76%, transparent);
+  transform: rotate(-2deg);
+  opacity: .42;
+}
+.gavel-caption { margin-top: -5px; font-size: 11px; letter-spacing: .14em; opacity: .7; }
+.gavel-button:hover .gavel-art-swing { filter: drop-shadow(0 10px 7px rgba(176,39,26,.16)); }
+@keyframes gavel-bitmap-cycle {
+  0%, 34% { transform: translate(-8px,-5px) rotate(-5deg) scale(.98); }
+  43% { transform: translate(-15px,-12px) rotate(-10deg) scale(.99); }
+  53% { transform: translate(5px,7px) rotate(3deg) scale(1.02); }
+  59% { transform: translate(0,1px) rotate(-1deg) scale(1); }
+  68%, 100% { transform: translate(-8px,-5px) rotate(-5deg) scale(.98); }
+}
+@keyframes gavel-impact-bitmap-cycle {
+  0%, 49% { opacity: 0; transform: scale(.62) rotate(-5deg); }
+  53% { opacity: .96; transform: scale(1.03) rotate(0); }
+  61% { opacity: .48; transform: scale(1.1) rotate(1deg); }
+  72%, 100% { opacity: 0; transform: scale(1.18) rotate(2deg); }
+}
+
+/* 设置页：先给状态与主选择，把手动端点、抓取和音频收进按需展开层。 */
+.settings-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+.settings-status-grid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 2px solid var(--line-strong);
+  background: var(--paper-2);
+  font-size: 12px;
+}
+.settings-status-grid span { color: var(--ink-soft); }
+.settings-status-grid .is-ready { border-color: var(--green); }
+.settings-status-grid .is-missing { border-color: var(--vermillion); }
+.settings-status-grid .is-optional { border-color: var(--blue); }
+.settings-advanced {
+  margin: 8px 0 4px;
+  border-top: 1px dashed var(--line-strong);
+  border-bottom: 1px dashed var(--line-strong);
+}
+.settings-advanced > summary {
+  cursor: pointer;
+  padding: 10px 2px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.settings-grid-nested { padding: 2px 0 8px; }
+.settings-single-field { padding-bottom: 10px; }
+.settings-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.settings-choice-grid button {
+  min-height: 86px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.settings-choice-grid button b { display: block; margin-bottom: 5px; font: 900 15px var(--serif); }
+.settings-choice-grid button span { display: block; color: var(--ink-soft); font-size: 11.5px; line-height: 1.65; }
+.settings-choice-grid button.is-selected { border-color: var(--blue); box-shadow: inset 4px 0 0 var(--blue); background: rgba(23,73,174,.035); }
+.settings-inline-warning { margin-top: 8px; color: var(--vermillion); font-size: 12px; font-weight: 700; }
+.settings-optional-group > summary { cursor: pointer; list-style: none; }
+.settings-optional-group > summary::-webkit-details-marker { display: none; }
+.settings-optional-group > summary::after { content: '＋'; align-self: center; justify-self: end; font-size: 20px; color: var(--ink-soft); }
+.settings-optional-group[open] > summary::after { content: '－'; }
+.settings-group-heading h3 em { margin-left: 6px; color: var(--ink-soft); font: 700 11px var(--sans); font-style: normal; letter-spacing: .08em; }
+.save-state.is-dirty { color: var(--vermillion); }
+
+@media (max-width: 760px) {
+  .gavel-stage { width: 278px; height: 190px; }
+  .settings-status-grid, .settings-choice-grid { grid-template-columns: 1fr; }
+  .settings-status-grid { gap: 5px; }
+  .settings-choice-grid button { min-height: 74px; }
+  .settings-grid-nested { grid-template-columns: 1fr; }
+  .clue-quote-grid { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gavel-art-swing { animation: none !important; transform: translate(2px,4px) rotate(1deg); }
+  .gavel-art-impact { animation: none !important; opacity: .2; transform: scale(1); }
 }
