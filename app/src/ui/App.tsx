@@ -308,11 +308,34 @@ export function App(): React.ReactElement {
           logSinkRef.current('检索', `候选源 ${src.id} 音频定位失败：${located.reason.slice(0, 80)}`);
           continue;
         }
-        const { segments, fullText } = await transcribeAudioUrl(
-          located.audio.audioUrl,
-          { kind: asrKind, apiKey: asrKey },
-          (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}`),
-        );
+        let segments: any[] = [];
+        let fullText = '';
+        {
+          // 2026-08-22 N8CGYU 案（54分钟超时根因之一）：首块闸门——先转第 1 块，
+          // 与目标指纹英文词做词面相关度检查，不相关即中止（预算留给下一源）。
+          const targetEn = ((cf as any).fingerprints || []).flatMap((f: any) => f.searchKeywordsEn || []).join(' ').slice(0, 400);
+          const first = await transcribeAudioUrl(
+            located.audio.audioUrl,
+            { kind: asrKind, apiKey: asrKey },
+            (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}（首块闸门判定中）`),
+            { maxChunks: 1 },
+          );
+          const probe = (first.fullText || '').slice(0, 12000);
+          const kw = targetEn.split(/[^A-Za-z0-9]+/).filter((w: string) => w.length >= 5);
+          const hits = kw.filter((w: string) => probe.toLowerCase().includes(w.toLowerCase())).length;
+          if (kw.length >= 3 && hits === 0) {
+            logSinkRef.current('检索', `候选源 ${src.id} 首块闸门：首块未见任何指纹相关词——中止剩余转录（预算转移）`);
+            continue;
+          }
+          logSinkRef.current('检索', `候选源 ${src.id} 首块闸门通过（相关词 ${hits}/${kw.length}）——继续全量转录`);
+          const rest = await transcribeAudioUrl(
+            located.audio.audioUrl,
+            { kind: asrKind, apiKey: asrKey },
+            (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}`),
+          );
+          segments = rest.segments;
+          fullText = rest.fullText;
+        }
         if (fullText.length > 2000) {
           src.fullText = fullText;
           src.partial = false;

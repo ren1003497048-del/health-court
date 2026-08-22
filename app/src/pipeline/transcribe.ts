@@ -85,15 +85,17 @@ export async function transcribeAudioUrl(
   audioUrl: string,
   cfg: AsrConfig,
   onProgress?: (p: TranscribeProgress) => void,
+  opts?: { maxChunks?: number },
 ): Promise<{ segments: AsrSegment[]; fullText: string; durationSec: number }> {
   const audio = await fetchDecode(audioUrl);
   const mono = resampleMono(audio);
   const durationSec = mono.length / TARGET_SR;
   const chunkSec = CHUNK_MINUTES * 60;
   const totalChunks = Math.max(1, Math.ceil(durationSec / chunkSec));
+  const chunksToDo = Math.min(totalChunks, opts?.maxChunks ?? totalChunks); // 首块闸门截断
   const all: AsrSegment[] = [];
 
-  for (let ci = 0; ci < totalChunks; ci++) {
+  for (let ci = 0; ci < chunksToDo; ci++) {
     const startIdx = ci * chunkSec * TARGET_SR;
     const endIdx = Math.min(mono.length, startIdx + chunkSec * TARGET_SR);
     const slice = mono.subarray(startIdx, endIdx);

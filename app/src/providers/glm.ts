@@ -40,6 +40,11 @@ export function createGlmProvider(cfg: GlmConfig): ProviderAdapter {
       // 2026-08-18 实测：enable:true 是模型真正联网的关键，缺省则静默不搜并可能编造
       body.tools = [{ type: 'web_search', web_search: { enable: true, search_result: true } }];
     }
+    if (opts.thinkingDisabled) {
+      // 2026-08-22 N8CGYU 案：思考模型把 max_tokens 烧在 reasoning 上（content=0），
+      // JSON 输出场景显式禁用思考（bigmodel 官方参数；不支持时被忽略无害）
+      body.thinking = { type: 'disabled' };
+    }
     const res = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: {

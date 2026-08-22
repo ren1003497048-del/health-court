@@ -258,7 +258,7 @@ export function mapVerdict(
   if (admissibleGroups !== undefined && admissibleGroups < MIN_ADMISSIBLE_EVIDENCE_GROUPS) {
     return {
       word: '不足立案',
-      rule: `正式证据仅 ${admissibleGroups} 组，未达到 ${MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组立案门槛；现有内容仅作线索展示，不出具倾向性裁决`,
+      rule: `已完成核查流程（检索与对质均已进行），但可采信证据仅 ${admissibleGroups} 组、未达 ${MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组立案门槛——现有对应仅作线索展示，不出具倾向性裁决。「未发现」不等于「证明清白」`,
       counts,
       attribution,
     };

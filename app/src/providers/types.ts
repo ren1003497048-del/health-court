@@ -14,6 +14,8 @@ export interface ChatOptions {
   webSearch?: boolean;
   /** 返回原文（不剥离思考），默认剥离 */
   raw?: boolean;
+  /** 禁用思考模式（思考模型 JSON 输出场景：reasoning 烧光 max_tokens 致 content 为空） */
+  thinkingDisabled?: boolean;
 }
 
 export interface ChatResult {
@@ -51,7 +53,8 @@ export async function chatJson<T>(
   user: string,
   opts?: { maxTokens?: number },
 ): Promise<T> {
-  const attempt = async (strict: boolean) => {
+  const maxTokens = Math.max(opts?.maxTokens ?? 4096, 4096);
+  const attempt = async (strict: boolean, noThink: boolean) => {
     const r = await chat(
       [
         { role: 'system', content: system },
@@ -60,14 +63,20 @@ export async function chatJson<T>(
           content: strict ? user + '\n\n再次强调：只输出一个合法 JSON 对象，不要任何其他文字。' : user,
         },
       ],
-      { temperature: 0.1, maxTokens: opts?.maxTokens ?? 4096 },
+      { temperature: 0.1, maxTokens, thinkingDisabled: noThink },
     );
     return extractJson(r.content);
   };
   try {
-    return await attempt(false);
+    return await attempt(false, false);
   } catch {
-    return await attempt(true); // 一次宽松重试
+    // 2026-08-22 N8CGYU 案根因：思考模型（glm-5.2 coding 端点）把 max_tokens 全烧在
+    // reasoning_content 上，content 为空 → JSON 解析失败。重试时禁用思考。
+    try {
+      return await attempt(true, true);
+    } catch {
+      return await attempt(true, false); // 最后一次：只加严指令不禁思考（兼容不支持开关的端点）
+    }
   }
 }
 
