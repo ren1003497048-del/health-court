@@ -85,28 +85,37 @@ const playGavelImpact = () => {
   window.setTimeout(() => void context.close(), 500);
 };
 
+/** v3.4 法槌（用户拍板重做）：黑白线条漫画风、右上 50° 摆入砸向右侧 0°、
+ * 把手末端微位移、加速度缓动（cubic-bezier 负值前段=蓄力后段加速）、
+ * 自动播放（挂载即敲击）、无文字标签、无点击重放。 */
 function CourtGavel(): React.ReactElement {
-  const [hit, setHit] = useState(0);
+  const [cycle, setCycle] = useState(0);
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setCycle(1), 350);
+    return () => window.clearTimeout(timer);
+  }, []);
   return (
-    <button
-      className="gavel-button"
-      type="button"
-      onClick={() => {
-        setHit((value) => value + 1);
-        playGavelImpact();
-      }}
-      aria-label="重放法槌敲击"
-      title="点击重放法槌敲击"
-    >
-      <span className="gavel-stage" aria-hidden="true">
-        <img key={`swing-${hit}`} className="gavel-art gavel-art-swing" src={gavelSwingUrl} alt="" draggable={false} decoding="async" />
-        <img key={`impact-${hit}`} className="gavel-art gavel-art-impact" src={gavelImpactUrl} alt="" draggable={false} decoding="async" />
-        <span className="gavel-ground" />
-      </span>
-      <span className="gavel-caption">落槌 · 点击重放</span>
-    </button>
+    <div className="gavel-stage" aria-hidden="true" key={cycle}>
+      <svg className="gavel-svg" viewBox="0 0 190 120" role="presentation">
+        <g className="gavel-arm">
+          <rect className="g-head" x="112" y="18" width="34" height="30" rx="3" transform="rotate(-50 129 33)" />
+          <path className="g-band" d="M118 24l26 14M114 32l26 14" transform="rotate(-50 129 33)" />
+          <path className="g-handle" d="M108 52 L64 96" />
+          <path className="g-tip" d="M64 96 l-7 7" strokeDasharray="2 3" />
+        </g>
+        <g className="gavel-rest">
+          <rect className="g-head-rest" x="126" y="52" width="40" height="30" rx="3" />
+          <path className="g-band-rest" d="M134 57v20M158 57v20" />
+          <path className="g-handle-rest" d="M86 67 h34" />
+        </g>
+        <path className="g-sound-block" d="M168 84 h14 v6 h-14 z" />
+        <path className="g-impact-line l1" d="M166 74 l8 -8" />
+        <path className="g-impact-line l2" d="M176 88 l9 -2" />
+      </svg>
+    </div>
   );
 }
+
 
 /** v3.1 引文高亮：在扩展引文中对命中短语标红 */
 const HighlightQuote = ({ text, phrase }: { text: string; phrase?: string }) => {

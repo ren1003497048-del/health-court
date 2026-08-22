@@ -1134,12 +1134,30 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   const EXAM_SYSTEM =
     cf.profile?.mediaType === 'fiction'
       ? 'You are an evidence examiner for LITERARY texts distinguishing genuine copying from innocent overlap. Given a target quote (Chinese fiction) and a source quote, classify: expression_copy = the two share SPECIFIC literary formulation unique to the source (same idiosyncratic image, same unusual name/place, same sentence-level phrasing, same narrative detail sequence) - something an independent writer would NOT coincidentally produce; fact_relay = both reference the same public fact/work/allusion in their own words; generic_overlap = both use a common literary trope or theme (reunion, nostalgia, a peach garden as beauty) without specific shared details; inconclusive = cannot tell. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}'
-      : 'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell. NEWS DISCIPLINE: when target and source cover the same recent public event, shared date, person, event/document name, official quote or headline fact MUST be fact_relay unless they also share uncommon prose, a non-public detail combination, or the same error. Multiple independent news reports repeating the elements is evidence of publicness, not expression copying. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}';
+      : 'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell. NEWS DISCIPLINE: when target and source cover the same recent public event, shared date, person, event/document name, official quote or headline fact MUST be fact_relay unless they also share uncommon prose, a non-public detail combination, or the same error. Multiple independent news reports repeating the elements is evidence of publicness, not expression copying. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"} ARCHIVAL DISCIPLINE: archival or niche primary-source details (a specific 1868 newspaper incitement, a named obscure figure\'s anecdote, a specific statistic combination like 142 incidents / 31 killings / 43 shootings tied to a particular time/place) are NOT public textbook facts - relaying the same archival detail combination in the same context IS expression_copy, because an independent writer would not surface the same archival item. Rule of thumb: if the shared material would require reading THIS source (or its chain) to reproduce, classify expression_copy.';
   const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
     // v2.2.6：结构类 E2（宏观结构/论证链同构）走定位校验而非引文检定——其可靠性来自
     // 覆盖率阈值（60%）+源摘录逐条定位；引文式检定不适用于结构证据
+    // v3.4（UW31GR 案）：论证链同构类 E2（非 macro、链环节≥3、置信≥0.85）同样免引文检定——
+    // 结构证据没有 targetQuote 是常态而非缺陷，因"引文为空"判 inconclusive 是锂杀
+    // （本案两条六环节 0.93/0.92 置信的链条同构证据即被此误杀）
+    if (ev.level === 'E2' && !(ev.detail as any)?.macro) {
+      const stepM = String(ev.description || '').match(/(\d+)\s*个环节/);
+      const confM = String(ev.description || '').match(/置信\s*([\d.]+)/);
+      const chainSteps = (ev.detail as any)?.chainSteps ?? (stepM ? parseInt(stepM[1]) : 0);
+      const conf = Number((ev.detail as any)?.confidence ?? (confM ? parseFloat(confM[1]) : 0));
+      if (chainSteps >= 3 && conf >= 0.85) {
+        ev.examVerdict = 'expression_copy';
+        ev.examNote = `论证链 ${chainSteps} 环节同序对应（置信 ${conf}）——结构同构经链级校验，引文式检定不适用`;
+      } else {
+        ev.detail = { ...(ev.detail as any), demoted: true, demotedFrom: 'E2' };
+        ev.examVerdict = 'inconclusive';
+        ev.examNote = `论证链环节 ${chainSteps} 或置信 ${conf} 不足，降为线索级`;
+      }
+      continue;
+    }
     if (ev.level === 'E2' && (ev.detail as any)?.macro) {
       const maps = ((ev.detail as any).mappings || []) as any[];
       const src = srcOf(ev.sourceId);
@@ -1246,6 +1264,45 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     if (ev.sourceQuote) ev.sourceQuote = stripMarkdownMedia(ev.sourceQuote);
     if (ev.sourceParaphrase) ev.sourceParaphrase = stripMarkdownMedia(ev.sourceParaphrase);
     if (ev.targetParaphrase) ev.targetParaphrase = stripMarkdownMedia(ev.targetParaphrase);
+  }
+
+  // v3.4（UW31GR 案·用户拍板）：同源系统性相似——同一候选源 ≥3 处对应（含线索级证据）
+  // 即构成系统性、关联性相似的独立证据组。「线索级的证据也是证据」：同一源上反复出现
+  // 的对应（即使每条单独看是事实转述）在统计上排除了巧合——3 处档案级细节同现一源
+  // 不可能是独立创作的结果。
+  {
+    const bySource = new Map<string, typeof evidence>();
+    for (const ev of evidence) {
+      if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+      const key = String(ev.sourceId || '');
+      if (!bySource.has(key)) bySource.set(key, []);
+      bySource.get(key)!.push(ev);
+    }
+    for (const [sid, evs] of bySource) {
+      const total = evs.length;
+      const strong = evs.filter((e) => !(e.detail as any)?.demoted).length;
+      if (total >= 3 && strong < 2) {
+        // 多数命中但强证据不足 → 系统性相似证据（置信按命中密度）
+        const src = rt.sources.find((x) => x.id === sid);
+        const rep = evs[0];
+        const id = `EV-SYS-${sid}`;
+        if (!evidence.some((e) => e.id === id)) {
+          evidence.push({
+            id,
+            level: 'E3',
+            kind: 'systematic_overlap',
+            description: `同一来源（${(src?.title || sid).slice(0, 40)}）上出现 ${total} 处独立对应（${evs.map((e) => e.plainTitle || e.kind).slice(0, 4).join('、')}${total > 4 ? ' 等' : ''}）——多处对应同现一源构成系统性、关联性相似，独立创作无法解释这种密度`,
+            sourceId: sid,
+            sourceQuote: evs.map((e) => (e.sourceQuote || '').slice(0, 60)).filter(Boolean).slice(0, 3).join('\n———\n'),
+            targetQuote: evs.map((e) => (e.targetQuote || '').slice(0, 60)).filter(Boolean).slice(0, 3).join('\n———\n'),
+            examVerdict: 'expression_copy',
+            examNote: `同源 ${total} 处命中的系统性评估——单条或可辩为事实转述，密度排除了巧合`,
+            detail: { systematic: true, contributingEvidence: evs.map((e) => e.id) },
+          } as any);
+          rt.log('对质', `系统性相似判定：${sid} 上 ${total} 处对应（含线索级）构成独立证据组`);
+        }
+      }
+    }
   }
 
   // v3.2 上下文披露（用户要求：证据区披露被检内容附近的文本，经核查确保完整准确）：

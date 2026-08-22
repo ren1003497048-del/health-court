@@ -14,8 +14,12 @@ export const EVIDENCE_LEVEL_INFO: Record<EvidenceLevel, { name: string; desc: st
 
 export type VerdictWord = '不卫生' | '可能不卫生' | '可能卫生' | '卫生' | '休庭' | '不予受理' | '不足立案';
 
-/** 正式出具倾向性裁决所需的最少独立证据组数。 */
-export const MIN_ADMISSIBLE_EVIDENCE_GROUPS = 3;
+/**
+ * 正式出具倾向性裁决所需的最少独立证据组数。
+ * 2026-08-23 用户拍板（UW31GR 案）：3→2——2 组成立已说明被检文本与来源文本
+ * 存在系统性、关联性相似（3 处或更多对应同一候选源即有抄袭/洗稿嫌疑）。
+ */
+export const MIN_ADMISSIBLE_EVIDENCE_GROUPS = 2;
 
 /**
  * 白话判据表（2026-08-19 用户拍板）：

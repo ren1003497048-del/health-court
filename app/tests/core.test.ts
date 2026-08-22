@@ -55,9 +55,10 @@ describe('裁决映射（PRD §4.2 阈值）', () => {
   it('E3≥3 但无 E2 → 可能不卫生（措辞保持克制）', () => {
     expect(mapVerdict({ ...base, e3: 4, e3DistinctFingerprints: 4 }, 'none', usable, true).word).toBe('可能不卫生');
   });
-  it('正式证据不足 3 组时不出具倾向性裁决', () => {
-    expect(MIN_ADMISSIBLE_EVIDENCE_GROUPS).toBe(3);
-    expect(mapVerdict({ ...base, e3: 2, e3DistinctFingerprints: 2 }, 'none', usable, true, 2).word).toBe('不足立案');
+  it('v3.4 阈值 3→2（用户拍板）：2 组即立案，1 组才不足', () => {
+    expect(MIN_ADMISSIBLE_EVIDENCE_GROUPS).toBe(2);
+    expect(mapVerdict({ ...base, e3: 2, e3DistinctFingerprints: 2 }, 'none', usable, true, 2).word).not.toBe('不足立案');
+    expect(mapVerdict({ ...base, e3: 1, e3DistinctFingerprints: 1 }, 'none', usable, true, 1).word).toBe('不足立案');
   });
 });
 
