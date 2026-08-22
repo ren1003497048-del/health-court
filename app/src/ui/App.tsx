@@ -335,6 +335,17 @@ export function App(): React.ReactElement {
     setError(null);
     setVerdictDoc(null);
     setRunning({ stageIndex: 0, logs: [], evidence: [], fingerprints: 0, sources: [], objection: null, shake: false });
+    const humanizeLlmError = (e: unknown): Error => {
+      const raw = String((e as any)?.message || e);
+      let savedBase = '';
+      try {
+        savedBase = String(JSON.parse(localStorage.getItem('health-court.settings.v1') || '{}').baseUrl || '');
+      } catch { /* 读不到就只按报错判断 */ }
+      if (/1113|余额不足/.test(raw) && !/coding/.test(savedBase)) {
+        return new Error('GLM 报 1113 余额不足：当前 Key 是 Coding Plan 套餐，但 Base URL 指向通用端点。请到「设置 → 主模型」选择带「Coding 套餐端点」字样的预设（open.bigmodel.cn/api/coding/paas/v4）后重试。');
+      }
+      return e as Error;
+    };
     try {
       const { loadSettings } = await import('../store/local');
       const s = loadSettings();
@@ -523,7 +534,7 @@ export function App(): React.ReactElement {
         setRunning(null);
         return; // 弹窗已由 setMentalHygiene 触发
       }
-      setError(String(e?.message || e));
+      setError(String(humanizeLlmError(e)?.message || e));
       setRunning(null);
     }
   }, [input, bodyText, scrollLog]);

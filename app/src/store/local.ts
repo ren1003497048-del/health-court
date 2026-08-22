@@ -33,8 +33,10 @@ export interface ModelPreset {
  * 只提供可编辑预设，不替用户承诺免费额度、速率或账户可用性。
  */
 export const MODEL_PRESETS: ModelPreset[] = [
-  { id: 'glm-5.2', kind: 'glm', model: 'glm-5.2', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-5.2｜推荐·1M 长文本', note: '旗舰语义理解与长程任务，适合完整节目和多源材料。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2' },
-  { id: 'glm-4.7', kind: 'glm', model: 'glm-4.7', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-4.7｜稳健·200K', note: '通用分析与推理较均衡。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' },
+  { id: 'glm-5.2-coding', kind: 'glm', model: 'glm-5.2', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', label: 'GLM-5.2｜Coding 套餐端点·推荐', note: 'GLM Coding Plan 订阅用户选此项（通用端点会报 1113 余额不足）。1M 长文本，适合完整节目和多源材料。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2' },
+  { id: 'glm-5.2', kind: 'glm', model: 'glm-5.2', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-5.2｜通用端点·按量付费', note: '旗舰语义理解与长程任务；需通用端点付费余额（Coding Plan 用户请选上面的套餐端点）。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2' },
+  { id: 'glm-4.7-coding', kind: 'glm', model: 'glm-4.7', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', label: 'GLM-4.7｜Coding 套餐端点·稳健 200K', note: 'Coding Plan 订阅用户适用；通用分析与推理较均衡。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' },
+  { id: 'glm-4.7', kind: 'glm', model: 'glm-4.7', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-4.7｜通用端点·稳健·200K', note: '通用分析与推理较均衡；需通用端点付费余额。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' },
   { id: 'glm-4.7-flashx', kind: 'glm', model: 'glm-4.7-flashx', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', label: 'GLM-4.7-FlashX｜轻量·200K', note: '更适合高频试跑，仍需以账户实际权限为准。', docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' },
   { id: 'deepseek-v4-flash', kind: 'deepseek', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', label: 'DeepSeek V4 Flash｜推荐·1M', note: '长上下文与吞吐优先，适合多轮证据整理。', docsUrl: 'https://api-docs.deepseek.com/quick_start/pricing/' },
   { id: 'deepseek-v4-pro', kind: 'deepseek', model: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com', label: 'DeepSeek V4 Pro｜深度分析·1M', note: '复杂语义与抗辩优先，成本和可用额度以账户为准。', docsUrl: 'https://api-docs.deepseek.com/quick_start/pricing/' },
