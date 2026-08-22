@@ -123,6 +123,22 @@ const HighlightQuote = ({ text, phrase }: { text: string; phrase?: string }) => 
   );
 };
 
+/** v3.4 异议弹窗引文：默认 3 行折叠，点击展开全文 */
+const ObjectionQuote = ({ label, quote }: { label: string; quote: string }) => {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <blockquote
+      className={'oq-' + (open ? 'open' : 'clamp')}
+      onClick={() => setOpen((v) => !v)}
+      title={open ? '点击收起' : '点击展开全文'}
+    >
+      <span>{label}</span>
+      {quote}
+      <em className="oq-toggle">{open ? '收起 ▲' : '展开 ▼'}</em>
+    </blockquote>
+  );
+};
+
 /** v3 角色中文名 */
 const roleZh = (r: string) =>
   ({ clerk: '书记员', evidence_officer: '证据官', prosecutor: '公诉人', defender: '辩护人', judge: '法官', court_clerk: '法官助理', orchestrator: '审判长' } as Record<string, string>)[r] || r;
@@ -503,7 +519,7 @@ export function App(): React.ReactElement {
       // 对质证据先完整落位，再进入异议演出；宣判阶段只在演出结束后点亮。
       setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
 
-      const clipQuote = (quote?: string) => quote ? stripMarkdownMedia(quote).replace(/\s+/g, ' ').trim().slice(0, 620) || undefined : undefined;
+      const clipQuote = (quote?: string) => quote ? stripMarkdownMedia(quote).replace(/\s+/g, ' ').trim().slice(0, 2000) || undefined : undefined; // v3.4 弹窗引文上限放宽，截断交给 3 行折叠交互
       const objectionEvidence = evidence
         .filter((item): item is EvidenceItem & { level: 'E3' | 'E4' } => (item.level === 'E3' || item.level === 'E4') && isAdmissibleEvidence(item));
       const objectionQueue: ObjectionCue[] = objectionEvidence
@@ -688,16 +704,10 @@ function Courtroom(props: {
             {(running.objection.targetQuote || running.objection.sourceQuote) && (
               <div className="objection-quotes">
                 {running.objection.targetQuote && (
-                  <blockquote>
-                    <span>目标文本</span>
-                    {running.objection.targetQuote}
-                  </blockquote>
+                  <ObjectionQuote label="目标文本" quote={running.objection.targetQuote} />
                 )}
                 {running.objection.sourceQuote && (
-                  <blockquote>
-                    <span>来源文本</span>
-                    {running.objection.sourceQuote}
-                  </blockquote>
+                  <ObjectionQuote label="来源文本" quote={running.objection.sourceQuote} />
                 )}
               </div>
             )}
