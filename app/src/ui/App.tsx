@@ -1339,7 +1339,7 @@ function Settings(): React.ReactElement {
             lines.push('③ 转录 Groq whisper-large-v3：✅ Key 已配置（首次转录时实测）');
           }
         } else {
-          lines.push('③ 转录 GLM ASR：复用主模型 Key（需 bigmodel 账户含 ASR 额度，首次转录时实测）');
+          lines.push('③ 转录 GLM ASR：⚠️ 复用主模型 Key，但需通用端点付费 ASR 额度——GLM Coding Plan 套餐用户调用会报 1113 余额不足，播客单集将无法转录。此类用户请改选 Groq whisper-large-v3（免费注册）。');
         }
       } catch (e: any) {
         lines.push(`③ 转录：❌ ${String(e.message).slice(0, 90)}`);
@@ -1467,7 +1467,7 @@ function Settings(): React.ReactElement {
             <label>转录服务</label>
             <select value={s.asrKind} onChange={(e) => setS({ ...s, asrKind: e.target.value as any })}>
               <option value="groq">Groq · whisper-large-v3</option>
-              <option value="glm">GLM ASR（复用主模型 Key）</option>
+              <option value="glm">GLM ASR（复用主模型 Key——⚠️ Coding Plan 套餐无 ASR 额度会报 1113，此类用户请选 Groq）</option>
             </select>
           </div>
           {s.asrKind === 'groq' && (
