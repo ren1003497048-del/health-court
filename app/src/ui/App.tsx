@@ -39,79 +39,10 @@ export interface RunningState {
   shake: boolean;
 }
 
-const playGavelImpact = () => {
-  if (typeof window === 'undefined') return;
-  const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
-  if (!AudioContextCtor) return;
-
-  const context = new AudioContextCtor();
-  const now = context.currentTime;
-  const master = context.createGain();
-  master.gain.setValueAtTime(0.0001, now);
-  master.gain.exponentialRampToValueAtTime(0.18, now + 0.004);
-  master.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
-  master.connect(context.destination);
-
-  // 清脆木质瞬态：高通噪声 + 两个快速下坠的短音。
-  const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 0.055), context.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 3);
-  const noise = context.createBufferSource();
-  const highpass = context.createBiquadFilter();
-  highpass.type = 'highpass';
-  highpass.frequency.value = 850;
-  noise.buffer = buffer;
-  noise.connect(highpass);
-  highpass.connect(master);
-  noise.start(now);
-
-  [1480, 720].forEach((frequency, index) => {
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = index === 0 ? 'triangle' : 'sine';
-    oscillator.frequency.setValueAtTime(frequency, now);
-    oscillator.frequency.exponentialRampToValueAtTime(frequency * 0.56, now + 0.09);
-    gain.gain.setValueAtTime(index === 0 ? 0.16 : 0.09, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
-    oscillator.connect(gain);
-    gain.connect(master);
-    oscillator.start(now);
-    oscillator.stop(now + 0.12);
-  });
-
-  window.setTimeout(() => void context.close(), 500);
-};
-
-/** v3.4 法槌（用户拍板重做）：黑白线条漫画风、右上 50° 摆入砸向右侧 0°、
- * 把手末端微位移、加速度缓动（cubic-bezier 负值前段=蓄力后段加速）、
- * 自动播放（挂载即敲击）、无文字标签、无点击重放。 */
-function CourtGavel(): React.ReactElement {
-  const [cycle, setCycle] = useState(0);
-  React.useEffect(() => {
-    const timer = window.setTimeout(() => setCycle(1), 350);
-    return () => window.clearTimeout(timer);
-  }, []);
-  return (
-    <div className="gavel-stage" aria-hidden="true" key={cycle}>
-      <svg className="gavel-svg" viewBox="0 0 190 120" role="presentation">
-        <g className="gavel-arm">
-          <rect className="g-head" x="112" y="18" width="34" height="30" rx="3" transform="rotate(-50 129 33)" />
-          <path className="g-band" d="M118 24l26 14M114 32l26 14" transform="rotate(-50 129 33)" />
-          <path className="g-handle" d="M108 52 L64 96" />
-          <path className="g-tip" d="M64 96 l-7 7" strokeDasharray="2 3" />
-        </g>
-        <g className="gavel-rest">
-          <rect className="g-head-rest" x="126" y="52" width="40" height="30" rx="3" />
-          <path className="g-band-rest" d="M134 57v20M158 57v20" />
-          <path className="g-handle-rest" d="M86 67 h34" />
-        </g>
-        <path className="g-sound-block" d="M168 84 h14 v6 h-14 z" />
-        <path className="g-impact-line l1" d="M166 74 l8 -8" />
-        <path className="g-impact-line l2" d="M176 88 l9 -2" />
-      </svg>
-    </div>
-  );
-}
+/**
+ * 庭审终局页动画模块已于 2026-08-23 用户拍板移除（原 v3.4 黑白线条法槌 + 落锤音效）。
+ * 结论页保留静态裁决呈现：verdict-kicker / verdict-word / stamp。
+ */
 
 
 /** v3.1 引文高亮：在扩展引文中对命中短语标红 */
@@ -822,7 +753,7 @@ function Courtroom(props: {
               <textarea
                 id="case-body"
                 className="input-main"
-                placeholder="或直接粘贴正文（不少于 100 字）"
+                placeholder="文本内容可直接粘贴，注意包含作者和创作时间信息（不少于 100 字）"
                 value={bodyText}
                 onChange={(e) => setBodyText(e.target.value)}
               />
@@ -918,7 +849,6 @@ function VerdictView(props: {
     <div className="court-flow verdict-flow">
       <section className="panel court-sheet verdict-stage-panel">
         <span className="verdict-kicker">庭审终局 · 本案裁决</span>
-        <CourtGavel />
         <div className={'verdict-word ' + displayWord}>{displayWord}</div>
         {displayWord === '可能卫生' && (
           <div className="verdict-note">请持续关注精神卫生。</div>

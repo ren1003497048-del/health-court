@@ -183,6 +183,17 @@ export function countAdmissibleEvidenceGroups(evidence: EvidenceItem[]): number 
   return evidence.filter(isAdmissibleEvidence).length;
 }
 
+/**
+ * v3.5.1（UOF5I9 案拍板修正）：正面证据组——已准入且非负面查证。
+ * 负面证据（已查证无对应）证明的是「查证完成度」而非来源依赖：
+ * - 裁决门槛继续用 countAdmissibleEvidenceGroups（全查无对应 → 可能卫生，语义正确）
+ * - 波次提前终止与补源判定必须用本函数——第 1 波全是负面证据时不得终止扩张
+ *   （UOF5I9 教训：3 条负面证据被算成「3 组正式证据」→ 提前终止 → 11 个源未对质即宣判）
+ */
+export function countAccusatoryEvidenceGroups(evidence: EvidenceItem[]): number {
+  return evidence.filter((e) => isAdmissibleEvidence(e) && !(e.level === 'E1' && (e.detail as any)?.negative)).length;
+}
+
 /** 多家媒体同步报道同一近期事件时，日期、人名、事件名和官方文件名属于公共新闻事实。 */
 export function looksLikeSharedNewsFact(e: EvidenceItem, independentSourceCount: number): boolean {
   if (independentSourceCount < 2 || e.level !== 'E3') return false;

@@ -19,6 +19,7 @@ import {
   SOURCE_QUALITY_GATE,
   MIN_ADMISSIBLE_EVIDENCE_GROUPS,
   countAdmissibleEvidenceGroups,
+  countAccusatoryEvidenceGroups,
   isAdmissibleEvidence,
   isFormalControversyReport,
   looksLikeSharedNewsFact,
@@ -775,14 +776,17 @@ async function verifySourceRelations(cf: CaseFile, rt: CourtRuntime, sources: So
 }
 
 /** 当首轮已有具体相似线索但正式证据不足时，至多追加一轮证据导向检索。
- *  v3.5 波次纪律：正式证据已达立案门槛（≥2 组）即不再补源——提前终止优先于扩张。 */
+ *  v3.5 波次纪律：正面证据已达立案门槛（≥2 组）即不再补源——提前终止优先于扩张。
+ *  v3.5.1（UOF5I9 修正）：门槛判定改用正面证据组——负面查证（已查证无对应）不构成
+ *  「证据已足」的理由：恰恰相反，查而无对应说明该波白查，更应扩张或补源。 */
 export function shouldSupplementEvidence(evidence: EvidenceItem[], sources: SourceDoc[]): boolean {
   if (sources.length >= 22) return false;
-  const underThreshold = countAdmissibleEvidenceGroups(evidence) < MIN_ADMISSIBLE_EVIDENCE_GROUPS;
-  if (!underThreshold) return false; // 已凑足立案门槛——尊重波次提前终止，不再扩张
+  const underThreshold = countAccusatoryEvidenceGroups(evidence) < MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+  if (!underThreshold) return false; // 正面证据已凑足立案门槛——尊重波次提前终止，不再扩张
   const hasConcreteClue = evidence.some((item) => item.level === 'E2' || item.level === 'E3' || item.level === 'E4');
   const hasHighSimilarityCandidate = sources.some((source) => (source.similarity ?? 0) >= 75);
-  return hasHighSimilarityCandidate || hasConcreteClue;
+  const hasNegativeFindings = evidence.some((item) => item.level === 'E1' && (item.detail as any)?.negative);
+  return hasHighSimilarityCandidate || hasConcreteClue || hasNegativeFindings;
 }
 
 export async function supplementalDiscovery(

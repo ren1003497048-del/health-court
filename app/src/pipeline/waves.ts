@@ -16,7 +16,7 @@
 
 import type { CaseFile, SourceDoc } from '../court/types';
 import type { EvidenceItem } from '../court/evidence';
-import { MIN_ADMISSIBLE_EVIDENCE_GROUPS, countAdmissibleEvidenceGroups } from '../court/evidence';
+import { MIN_ADMISSIBLE_EVIDENCE_GROUPS, countAccusatoryEvidenceGroups } from '../court/evidence';
 import type { CourtRuntime } from './index';
 
 export const WAVE1_SIZE = 3;
@@ -140,7 +140,7 @@ export async function runWaves(
     }
   }
   let evidence = await crossExamineSources(cf, rt, crossExamination, top);
-  let admitted = countAdmissibleEvidenceGroups(evidence);
+  let admitted = countAccusatoryEvidenceGroups(evidence);
   if (admitted >= MIN_ADMISSIBLE_EVIDENCE_GROUPS) {
     rt.log('对质', `第 1 波即凑足 ${admitted} 组正式证据（≥${MIN_ADMISSIBLE_EVIDENCE_GROUPS}）——提前终止扩张，直接宣判`);
     return evidence;
@@ -150,7 +150,7 @@ export async function runWaves(
   if (second.length) {
     rt.log('对质', `第 1 波证据不足（${admitted}/${MIN_ADMISSIBLE_EVIDENCE_GROUPS} 组）——第 2 波扩至 ${Math.min(wave2, rt.sources.length)} 源轻对质（不转录）：${second.map((s) => s.id).join('、')}`);
     evidence = await crossExamineSources(cf, rt, crossExamination, second);
-    admitted = countAdmissibleEvidenceGroups(evidence);
+    admitted = countAccusatoryEvidenceGroups(evidence);
     if (admitted >= MIN_ADMISSIBLE_EVIDENCE_GROUPS) {
       rt.log('对质', `第 2 波凑足 ${admitted} 组正式证据——提前终止扩张，直接宣判`);
       return evidence;

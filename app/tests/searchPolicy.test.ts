@@ -60,5 +60,15 @@ describe('evidence and supplemental-search policy', () => {
       { ...clue({ subjectRelation: 'direct_source' }), id: 'EV-FP2-SRC1' },
       { ...clue({ subjectRelation: 'direct_source' }), id: 'EV-FP3-SRC1' },
     ], [source({ similarity: 88 })])).toBe(false);
+    // v3.5.1（UOF5I9 案）：负面证据（已查证无对应）不算正面组——
+    // 第 1 波全负面时必须补源扩张（旧逻辑把 3 条负面算成「3 组证据」导致 11 源未对质即宣判）
+    const negative = (id: string): EvidenceItem => ({
+      id, level: 'E1', kind: '已查证无对应', description: '逐段比对无对应',
+      sourceId: 'SRC1', targetQuoteLocated: true, sourceQuoteLocated: true,
+      detail: { negative: true, subjectRelation: 'direct_source' },
+    });
+    expect(shouldSupplementEvidence([
+      negative('EV-NEG-SRC1'), negative('EV-NEG-SRC2'), negative('EV-NEG-SRC3'),
+    ], [source({ similarity: 88 })])).toBe(true);
   });
 });
