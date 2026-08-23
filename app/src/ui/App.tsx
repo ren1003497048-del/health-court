@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CaseFile, SourceDoc } from '../court/types';
 import type { EvidenceItem, VerdictResult } from '../court/evidence';
 import type { VerdictDoc } from '../pipeline';
@@ -672,6 +672,36 @@ function Courtroom(props: {
     URL.revokeObjectURL(a.href);
   }, [verdictDoc]);
 
+  // v3.7 复制核查摘要：~200 字可贴社交媒体（clipboard API + execCommand 降级）
+  const [summaryToast, setSummaryToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!summaryToast) return;
+    const t = window.setTimeout(() => setSummaryToast(null), 2400);
+    return () => window.clearTimeout(t);
+  }, [summaryToast]);
+  const copySummary = useCallback(async () => {
+    if (!verdictDoc) return;
+    const mod = await import('./verdictExport');
+    const text = mod.buildShareSummary(verdictDoc);
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch { ok = false; }
+    }
+    setSummaryToast(ok ? '已复制核查摘要，可粘贴到豆瓣/微博' : '复制失败——请手动选取摘要文本');
+  }, [verdictDoc]);
+
   return (
     <>
       {running?.objection && (
@@ -806,6 +836,8 @@ function Courtroom(props: {
           doc={verdictDoc}
           onExportHtml={exportHtml}
           onExportJson={exportJson}
+          onCopySummary={copySummary}
+          summaryToast={summaryToast}
           exporting={exporting}
         />
       )}
@@ -821,9 +853,11 @@ function VerdictView(props: {
   doc: VerdictDoc;
   onExportHtml: () => void;
   onExportJson: () => void;
+  onCopySummary: () => void;
+  summaryToast: string | null;
   exporting: boolean;
 }): React.ReactElement {
-  const { doc, onExportHtml, onExportJson, exporting } = props;
+  const { doc, onExportHtml, onExportJson, onCopySummary, summaryToast, exporting } = props;
   const v = doc.verdict;
   const courtEvidence = useMemo(() => normalizeEvidenceForSources(doc.evidence, doc.sources), [doc.evidence, doc.sources]);
   const admittedCount = courtEvidence.filter(isAdmissibleEvidence).length;
@@ -1147,6 +1181,12 @@ function VerdictView(props: {
           <button className="btn btn-ghost" onClick={onExportJson}>
             导出 JSON
           </button>
+          <button className="btn btn-ghost" onClick={onCopySummary}>
+            复制核查摘要
+          </button>
+          {summaryToast && (
+            <span className="summary-toast" role="status">{summaryToast}</span>
+          )}
         </div>
 
         <div className="footnote-box" style={{ marginTop: 16 }}>

@@ -1079,21 +1079,34 @@ export async function crossExamination(
     }
   }
   const allResults: any[] = [];
-  for (const s of fpVerifiedSources) {
-    const segs = segmentsOf(s);
-    for (const seg of segs) {
-      try {
-        const fpSeg = await chatJson<any>(
-          rt.provider.chat,
-          FPCHECK_SYSTEM,
-          `指纹候选：\n${fpsCtx}\n\n候选源文本（${seg.label}，可为空段）：\n${seg.text}`,
-          { maxTokens: 4096 },
-        );
-        for (const r of (fpSeg.results || []) as any[]) {
-          if (r && r.hit) allResults.push({ ...r, sourceId: seg.label.split('#')[0] });
+  // v3.7 优化（第二优先落地）：指纹验证 2 路并发——XIUM8Z 实测此段 10.3 分钟纯串行（13指纹×3源分段≈13次
+  // LLM 盲扫）。信号量 worker 模式与 ASR 并发同思路；结果按原任务序写回，日志与证据顺序保持确定。
+  {
+    const tasks: { s: SourceDoc; seg: { label: string; text: string } }[] = [];
+    for (const s of fpVerifiedSources) for (const seg of segmentsOf(s)) tasks.push({ s, seg });
+    const laneResults: any[][] = new Array(tasks.length);
+    let next = 0;
+    const worker = async () => {
+      while (true) {
+        const i = next++;
+        if (i >= tasks.length) return;
+        const { seg } = tasks[i];
+        try {
+          const fpSeg = await chatJson<any>(
+            rt.provider.chat,
+            FPCHECK_SYSTEM,
+            `指纹候选：\n${fpsCtx}\n\n候选源文本（${seg.label}，可为空段）：\n${seg.text}`,
+            { maxTokens: 4096 },
+          );
+          laneResults[i] = ((fpSeg.results || []) as any[]).map((r) => ({ ...r, sourceId: seg.label.split('#')[0] }));
+        } catch {
+          laneResults[i] = []; // 单段失败不阻塞
         }
-      } catch { /* 单段失败不阻塞 */ }
-    }
+      }
+    };
+    const FP_CONCURRENCY = 2; // LLM 端点限流友好；GLM/Gemini 免费档均可承受
+    await Promise.all(Array.from({ length: FP_CONCURRENCY }, () => worker()));
+    for (const rs of laneResults) for (const r of rs || []) allResults.push(r);
   }
   const fpRes = { results: allResults };
 

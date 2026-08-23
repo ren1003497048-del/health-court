@@ -102,3 +102,89 @@ export function downloadVerdictHtml(doc: VerdictDoc | any) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+// ---------------------------------------------------------------------------
+// v3.7 核查摘要（可转述交付物）：纯函数，从 VerdictDoc 现有字段生成 ~200 字纯文本，
+// 可直接粘贴豆瓣/微博/微信。零新增 LLM 调用（overview 复用导出侧同款清洗）。
+// 内容规范见协作基点文档「复制核查摘要」节（2026-08-23 定稿）。
+// ---------------------------------------------------------------------------
+
+const SHARE_URL = 'https://ren1003497048-del.github.io/health-court/';
+
+/** 中文句读边界截断（。！？；），不切在词中间 */
+function clipAtSentence(value: string, max: number): string {
+  const t = value.trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max + 10); // 略放宽后回找句末
+  const m = cut.match(/^(.*[。！？；])/);
+  const seg = m ? m[1] : t.slice(0, max);
+  return seg.length > max + 10 ? seg.slice(0, max) + '…' : seg;
+}
+
+/** 摘要文本零内部代号（公理2）：FP/SRC/类型码白话化 */
+const humanizeForShare = (value: string) => clean(value)
+  .replace(/\bFP(\d+)\b/g, '指纹')
+  .replace(/\bSRC(\d+)\b/g, '候选来源')
+  .replace(/[（(]\s*(data_combo|rare_case|weird_term|analogy|joke|ordering|other)\s*[）)]/g, '')
+  .replace(/\b(data_combo|rare_case|weird_term|analogy|ordering)\b/g, '指纹');
+
+function shareTime(value: unknown): string {
+  const d = new Date(String(value || ''));
+  if (Number.isNaN(d.getTime())) return String(value || '').slice(0, 16).replace('T', ' ');
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+export function buildShareSummary(doc: VerdictDoc | any): string {
+  const v = doc.verdict || {};
+  const cf = doc.caseFile || {};
+  const evidence = normalizeEvidenceForSources(doc.evidence || [], doc.sources || []);
+  const admitted = evidence.filter((e: any) => isAdmissibleEvidence(e) && !(e.level === 'E1' && (e.detail as any)?.negative));
+  const admittedAll = evidence.filter((e: any) => isAdmissibleEvidence(e));
+  const required = doc.admission?.required ?? MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+  const word = String(v.word || '');
+  const title = clipAtSentence(String(cf.target?.title || '').replace(/\s*[-–—|]\s*(独树不成林|Apple 播客).*$/, '').replace(/^["「]|["」]$/g, ''), 30);
+  const accusatory = admitted.length; // 正面证据组（v3.5.1 口径）
+  // overview 口径统一：与证据块同计（正面组数）——口径不一致时用确定性改写，避免摘要内自相矛盾
+  const overviewRaw = String(doc.overview || '');
+  const statedA = overviewRaw.match(/(\d+)\s*组(?:正式)?证据/)?.[1] ?? overviewRaw.match(/正式证据(?:组)?[（(]?\s*(\d+)/)?.[1];
+  const overview = (statedA !== undefined && Number(statedA) !== accusatory)
+    ? `已完成 ${(doc.sources || []).length} 个候选源核查；${accusatory} 组正式查证，${Math.max(0, evidence.length - admittedAll.length)} 条线索未准入。`
+    : overviewForExport(doc.overview, (doc.sources || []).length, admittedAll.length, evidence.length);
+  const time = shareTime(doc.generatedAt);
+
+  // 证据段：按裁决差异化
+  let evidenceBlock = '';
+  const strongest = evidence.find((e: any) => e.examVerdict === 'expression_copy' && (e.plainTitle || e.description) && (e.targetQuote || e.sourceQuote));
+  if (word === '不卫生' || word === '可能不卫生') {
+    if (strongest) {
+      // description 形如「FP8（data_combo）在 SRC1 命中：正文」——白话化后剥掉前缀只留正文
+      const desc = clipAtSentence(humanizeForShare(strongest.description).replace(/^.*?命中[：:]\s*/, ''), 80);
+      evidenceBlock = `最强证据（共 ${accusatory} 组正式证据，此处列 1 组）：\n${humanizeForShare(strongest.plainTitle || '具体对应')}\n${desc}\n来源：${clean(strongest.sourceTitle) || '见判决书'}（${String(strongest.sourceUrl || '').trim()}）`;
+    } else {
+      evidenceBlock = `共 ${accusatory} 组正式证据（详见判决书）。`;
+    }
+  } else if (word === '可能卫生') {
+    const negative = evidence.filter((e: any) => e.level === 'E1' && (e.detail as any)?.negative).length;
+    evidenceBlock = `正式证据 0 组；${negative > 0 ? `${(doc.sources || []).length} 个候选源中 ${negative} 个已逐段比对、均无对应` : `${(doc.sources || []).length} 个候选源比对范围内未发现对应`}。`;
+  } else if (word === '不足立案') {
+    evidenceBlock = `线索 ${evidence.length} 条，正式证据不足 ${required} 组，不出具倾向性裁决。`;
+  } else if (word === '休庭') {
+    evidenceBlock = '本案未能进入对质（内容不可得或无可比对候选）。';
+  } else {
+    evidenceBlock = `共 ${accusatory} 组正式证据（详见判决书）。`;
+  }
+
+  const border = `边界：检索不穷尽（版权墙/未数字化内容不可达），「${word}」为本次核查范围内的工作性结论，非法律认定。`;
+  return [
+    `【卫生法庭·核查摘要】${title}`,
+    '',
+    `裁决：${word}`,
+    overview ? clipAtSentence(overview, 90) : '',
+    '',
+    evidenceBlock,
+    '',
+    border,
+    `核查时间 ${time} · 卫生法庭 health-court（开源）${SHARE_URL}`,
+  ].filter((x, i) => x !== '' || [1, 4, 6].includes(i)).join('\n');
+}
