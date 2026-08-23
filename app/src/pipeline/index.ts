@@ -20,6 +20,7 @@ import {
   MIN_ADMISSIBLE_EVIDENCE_GROUPS,
   countAdmissibleEvidenceGroups,
   countAccusatoryEvidenceGroups,
+  buildSystematicOverlapEvidence,
   isAdmissibleEvidence,
   isFormalControversyReport,
   looksLikeSharedNewsFact,
@@ -1316,46 +1317,6 @@ export async function crossExamination(
     if (ev.targetParaphrase) ev.targetParaphrase = stripMarkdownMedia(ev.targetParaphrase);
   }
 
-  // v3.4（UW31GR 案·用户拍板）：同源系统性相似——同一候选源 ≥3 处对应（含线索级证据）
-  // 即构成系统性、关联性相似的独立证据组。「线索级的证据也是证据」：同一源上反复出现
-  // 的对应（即使每条单独看是事实转述）在统计上排除了巧合——3 处档案级细节同现一源
-  // 不可能是独立创作的结果。
-  {
-    const bySource = new Map<string, typeof evidence>();
-    for (const ev of evidence) {
-      if (ev.level !== 'E3' && ev.level !== 'E4') continue;
-      if ((ev.detail as any)?.systematic) continue; // v3.5 增量：系统性相似组自身不重复计入
-      const key = String(ev.sourceId || '');
-      if (!bySource.has(key)) bySource.set(key, []);
-      bySource.get(key)!.push(ev);
-    }
-    for (const [sid, evs] of bySource) {
-      const total = evs.length;
-      const strong = evs.filter((e) => !(e.detail as any)?.demoted).length;
-      if (total >= 3 && strong < 2) {
-        // 多数命中但强证据不足 → 系统性相似证据（置信按命中密度）
-        const src = rt.sources.find((x) => x.id === sid);
-        const rep = evs[0];
-        const id = `EV-SYS-${sid}`;
-        if (!evidence.some((e) => e.id === id)) {
-          evidence.push({
-            id,
-            level: 'E3',
-            kind: 'systematic_overlap',
-            description: `同一来源（${(src?.title || sid).slice(0, 40)}）上出现 ${total} 处独立对应（${evs.map((e) => e.plainTitle || e.kind).slice(0, 4).join('、')}${total > 4 ? ' 等' : ''}）——多处对应同现一源构成系统性、关联性相似，独立创作无法解释这种密度`,
-            sourceId: sid,
-            sourceQuote: evs.map((e) => (e.sourceQuote || '').slice(0, 60)).filter(Boolean).slice(0, 3).join('\n———\n'),
-            targetQuote: evs.map((e) => (e.targetQuote || '').slice(0, 60)).filter(Boolean).slice(0, 3).join('\n———\n'),
-            examVerdict: 'expression_copy',
-            examNote: `同源 ${total} 处命中的系统性评估——单条或可辩为事实转述，密度排除了巧合`,
-            detail: { systematic: true, contributingEvidence: evs.map((e) => e.id) },
-          } as any);
-          rt.log('对质', `系统性相似判定：${sid} 上 ${total} 处对应（含线索级）构成独立证据组`);
-        }
-      }
-    }
-  }
-
   // v3.2 上下文披露（用户要求：证据区披露被检内容附近的文本，经核查确保完整准确）：
   // 每条 E3/E4 证据存 contextTarget/contextSource——引文前后各~200字，命中句内嵌；
   // 披露内容机械校验：必须是目标文本/源全文的逐字子串（locateQuote 定位失败则不披露）
@@ -1528,6 +1489,20 @@ export async function crossExamination(
       (ev.detail as any) = { ...(ev.detail || {}), demoted: true, demotedFrom: ev.level, sharedNewsFact: true };
       rt.log('对质', `公共新闻事实纪律：${ev.id} 降为线索级（${alsoCount} 个独立来源同步报道）`);
     }
+  }
+
+  // 同源系统性对应只能在来源关系、时序、公共事实与具体引用检查全部完成后生成。
+  // 三条贡献线索必须双侧定位通过且分别去重；合成组只计一次，原线索继续保持降级。
+  for (const source of rt.sources) {
+    const id = `EV-SYS-${source.id}`;
+    if (evidence.some((item) => item.id === id)) continue;
+    const systematic = buildSystematicOverlapEvidence(source.id, source.title, evidence);
+    if (!systematic) continue;
+    evidence.push(systematic);
+    const total = Array.isArray((systematic.detail as any)?.systematicContributors)
+      ? (systematic.detail as any).systematicContributors.length
+      : 0;
+    rt.log('对质', `系统性相似准入：${source.id} 上 ${total} 组不同双侧原句定位通过，合并为 1 个证据组`);
   }
 
   // v2.2 证据按置信度排序：E4 > E3 > E2；同级按源相似度降序

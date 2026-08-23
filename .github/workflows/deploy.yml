@@ -24,11 +24,15 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: app/package-lock.json
-      - name: Install & Build
-        run: |
-          cd app
-          npm ci
-          npm run build
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+      - name: Run tests
+        working-directory: app
+        run: npm test
+      - name: Build production bundle
+        working-directory: app
+        run: npm run build
       - name: Add .nojekyll
         run: touch app/dist/.nojekyll
       - uses: actions/configure-pages@v5

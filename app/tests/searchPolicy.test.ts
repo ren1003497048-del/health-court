@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { evidenceExclusionReason, normalizeEvidenceForSources, type EvidenceItem } from '../src/court/evidence';
+import {
+  buildSystematicOverlapEvidence,
+  evidenceExclusionReason,
+  normalizeEvidenceForSources,
+  type EvidenceItem,
+} from '../src/court/evidence';
 import { shouldSupplementEvidence } from '../src/pipeline';
 import type { SourceDoc } from '../src/court/types';
 
@@ -48,6 +53,59 @@ describe('evidence and supplemental-search policy', () => {
 
   it('keeps an unknown source relation out of the formal evidence count', () => {
     expect(evidenceExclusionReason(clue({ subjectRelation: 'unknown' }))).toContain('关系尚未完成确认');
+  });
+
+  it('keeps E3/E4 evidence out unless both quotes were explicitly located', () => {
+    const unverified = {
+      ...clue({ subjectRelation: 'direct_source' }),
+      targetQuoteLocated: undefined,
+      sourceQuoteLocated: undefined,
+    };
+
+    expect(evidenceExclusionReason(unverified)).toContain('未通过定位校验');
+  });
+
+  it('builds one auditable systematic group from three distinct, located clues', () => {
+    const locatedClue = (id: string, targetQuote: string, sourceQuote: string): EvidenceItem => ({
+      ...clue({ subjectRelation: 'direct_source', demoted: true }),
+      id,
+      targetQuote,
+      sourceQuote,
+      examVerdict: 'fact_relay',
+    });
+    const group = buildSystematicOverlapEvidence('SRC1', '候选来源', [
+      locatedClue('EV-1', '目标句一', '来源句一'),
+      locatedClue('EV-2', '目标句二', '来源句二'),
+      locatedClue('EV-3', '目标句三', '来源句三'),
+    ]);
+
+    expect(group).not.toBeNull();
+    expect(group?.targetQuote).toBe('目标句一');
+    expect(group?.sourceQuote).toBe('来源句一');
+    expect(group?.targetQuote).not.toContain('———');
+    expect((group?.detail as any)?.systematicContributors).toHaveLength(3);
+    expect(evidenceExclusionReason(group!)).toBeNull();
+  });
+
+  it('does not synthesize a systematic group from duplicates or ineligible clues', () => {
+    const candidate = (id: string, targetQuote: string, sourceQuote: string, patch: Partial<EvidenceItem> = {}): EvidenceItem => ({
+      ...clue({ subjectRelation: 'direct_source', demoted: true }),
+      id,
+      targetQuote,
+      sourceQuote,
+      examVerdict: 'fact_relay',
+      ...patch,
+    });
+    const candidates = [
+      candidate('EV-1', '重复目标句', '来源句一'),
+      candidate('EV-2', '重复目标句', '来源句二'),
+      candidate('EV-3', '目标句三', '来源句一'),
+      candidate('EV-4', '目标句四', '来源句四', { sourceQuoteLocated: false }),
+      candidate('EV-5', '目标句五', '来源句五', { detail: { subjectRelation: 'direct_source', demoted: true, citationState: 'declared_specific' } }),
+      candidate('EV-6', '目标句六', '来源句六', { detail: { subjectRelation: 'same_event', demoted: true } }),
+    ];
+
+    expect(buildSystematicOverlapEvidence('SRC1', '候选来源', candidates)).toBeNull();
   });
 
   it('requests one supplemental round when concrete clues exist but the filing threshold is unmet', () => {

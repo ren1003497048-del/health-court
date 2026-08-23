@@ -6,6 +6,7 @@
   "description": "卫生法庭 Health Court* — 对文化内容进行来源核查的漫画法庭（机制严谨 × 呈现漫画）",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/clean-dist.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",

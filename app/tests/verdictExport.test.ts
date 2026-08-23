@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildSystematicOverlapEvidence, type EvidenceItem } from '../src/court/evidence';
 import { buildVerdictHtml } from '../src/ui/verdictExport';
 
 describe('判决书导出回归', () => {
@@ -19,5 +20,39 @@ describe('判决书导出回归', () => {
     expect(html).toContain('相似度仅用于检索排序');
     expect(html).toContain('href="https://example.com/very/long/path?q=1"');
     expect(html).toContain('overflow-wrap:anywhere');
+  });
+
+  it('在导出文书中披露系统性证据的全部贡献原句', () => {
+    const evidence = ['一', '二', '三'].map((suffix): EvidenceItem => ({
+      id: `EV-${suffix}`,
+      level: 'E3',
+      kind: '细节比对',
+      description: '线索',
+      targetQuote: `目标句${suffix}`,
+      targetQuoteLocated: true,
+      sourceQuote: `来源句${suffix}`,
+      sourceQuoteLocated: true,
+      sourceId: 'SRC1',
+      examVerdict: 'fact_relay',
+      detail: { demoted: true, subjectRelation: 'direct_source' },
+    }));
+    const systematic = buildSystematicOverlapEvidence('SRC1', '候选来源', evidence);
+    const html = buildVerdictHtml({
+      generatedAt: '2026-08-23T10:00:00+08:00',
+      caseFile: { caseId: 'HC-SYSTEMATIC', target: { title: '测试标的' }, profile: {}, trialLog: [] },
+      verdict: { word: '不足立案', rule: '测试', attribution: 'unknown', counts: { E1: 0, E2: 0, E3: 1, E4: 0, E5: 0 } },
+      sources: [{ id: 'SRC1', title: '候选来源', url: 'https://source.example.com', subjectRelation: 'direct_source' }],
+      evidence: [systematic],
+      limits: [],
+      externalClaims: [],
+      debateRounds: [],
+      overview: '',
+      opinion: '',
+      disclaimer: '非法律结论',
+    } as any);
+
+    expect(html).toContain('系统性对应的 3 组贡献原句');
+    expect(html).toContain('目标句二');
+    expect(html).toContain('来源句三');
   });
 });

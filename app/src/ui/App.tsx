@@ -320,7 +320,7 @@ export function App(): React.ReactElement {
       const { createGlmProvider } = await import('../providers/glm');
       const { createOpenAiCompatProvider, createJinaFetcher } = await import('../providers/openai-compat');
       const { createDeepSeekProvider, createGeminiProvider } = await import('../providers/multi');
-      const { createSerperSearch, beginSearchCase } = await import('../providers/serper');
+      const { createSerperSearch } = await import('../providers/serper');
       let provider;
       if (s.kind === 'glm') {
         provider = createGlmProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model, searchModel: s.searchModel || undefined });
@@ -332,20 +332,11 @@ export function App(): React.ReactElement {
         provider = createOpenAiCompatProvider({ apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model });
       }
       const fetcher = createJinaFetcher({ apiKey: s.jinaApiKey || undefined });
-      // 搜索通道：serper（共享/自填 Key）；额度尽或选择 provider 时回落主模型内置搜索
+      // 搜索通道：Serper 仅使用用户自填 Key；静态站点不携带项目共享密钥。
       const serper = createSerperSearch({ userApiKey: s.serperApiKey || undefined });
       const originalSearch = provider.search.bind(provider);
       provider.search = async (query: string) => {
-        if (s.searchProvider === 'serper') {
-          try {
-            return await serper.search(query);
-          } catch (e: any) {
-            if (String(e.message).includes('SHARED_QUOTA_EXCEEDED')) {
-              pushLog('检索', '本案共享搜索额度已用尽（60 次）。可在设置中填入自己的 Serper Key（应用不再限次），或切换为主模型内置检索。');
-            }
-            throw e;
-          }
-        }
+        if (s.searchProvider === 'serper') return serper.search(query);
         return originalSearch(query);
       };
 
@@ -394,7 +385,6 @@ export function App(): React.ReactElement {
         for (const l of priorLogs) logs.push(l);
         pushLog('立案', `检测到上次庭审中断快照（保存于 ${new Date(resumeFrom.savedAt).toLocaleString('zh-CN', { hour12: false })}），从「${stageZh[resumeFrom.stage] || resumeFrom.stage}」之后续跑——已完成的取证与检索不重复消耗`);
         pushLog('检索', `快照回填：候选源 ${rt.sources.length} 个、证据 ${rt.evidence.length} 条、已对质源 ${(rt.waveExaminedIds || []).length} 个`);
-        beginSearchCase(cf.caseId);
         setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources, fingerprints: cf.fingerprints.length } : r));
       } else {
       try {
@@ -452,7 +442,6 @@ export function App(): React.ReactElement {
         }
       }
       } // ← v3.6：else（非续跑）块闭合——立案与预审只在全新开审时执行
-      beginSearchCase(cf.caseId);
       if (!resumeFrom) {
         setRunning((r) => (r ? { ...r, stageIndex: 1 } : r));
         await pipeline.investigation(cf, rt);
@@ -991,7 +980,21 @@ function VerdictView(props: {
                 ))}
               </div>
             )}
-            {(e.targetQuote || e.sourceQuote) && (
+            {Array.isArray((e.detail as any)?.systematicContributors) && (e.detail as any).systematicContributors.length > 0 && (
+              <details className="systematic-contributors" open>
+                <summary>系统性对应的 {(e.detail as any).systematicContributors.length} 组贡献原句（均已双侧定位）</summary>
+                {(e.detail as any).systematicContributors.map((item: any, index: number) => (
+                  <div className="systematic-contributor" key={item.id || index}>
+                    <b>对应 {index + 1}{item.title ? ` · ${item.title}` : ''}</b>
+                    <div className="palette">
+                      <div className="quote-box target"><span className="quote-label">被检内容</span><div className="palette-text">{stripMarkdownMedia(item.targetQuote || '')}</div></div>
+                      <div className="quote-box source"><span className="quote-label">参照源文</span><div className="palette-text">{stripMarkdownMedia(item.sourceQuote || '')}</div></div>
+                    </div>
+                  </div>
+                ))}
+              </details>
+            )}
+            {(!Array.isArray((e.detail as any)?.systematicContributors) || (e.detail as any).systematicContributors.length === 0) && (e.targetQuote || e.sourceQuote) && (
               <div className="palette" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
                 {e.targetQuote && (
                   <div className="quote-box target" style={{ margin: 0 }}>
@@ -1286,7 +1289,7 @@ function Settings(): React.ReactElement {
   const modelReady = !!(s.apiKey && s.baseUrl && s.model);
   const searchReady = s.searchProvider === 'provider'
     ? s.kind === 'glm' || s.kind === 'gemini'
-    : true;
+    : !!s.serperApiKey.trim();
   const audioReady = s.asrKind === 'glm' ? s.kind === 'glm' && !!s.apiKey : !!s.groqApiKey;
   const providerPresets = presetsForProvider(s.kind);
   const selectedPreset = providerPresets.find((preset) => preset.model === s.model && preset.baseUrl === s.baseUrl);
@@ -1322,24 +1325,18 @@ function Settings(): React.ReactElement {
       // ② 搜索通道
       try {
         if (s.searchProvider === 'serper') {
-          const { createSerperSearch, sharedSearchRemaining } = await import('../providers/serper');
+          const { createSerperSearch } = await import('../providers/serper');
           if (s.serperApiKey) {
             const sp = createSerperSearch({ userApiKey: s.serperApiKey });
             const { docs } = await sp.search('connectivity test');
             lines.push(`② 搜索 Serper（自有 Key）：✅ 返回 ${docs.length} 条`);
           } else {
-            const left = sharedSearchRemaining();
-            lines.push(`② 搜索 Serper（共享额度）：${left > 0 ? `✅ 本案剩余 ${left} 次` : '⚠️ 共享额度已用尽，建议注册自己的 Key'}`);
+            lines.push('② 搜索 Serper：⚠️ 未填写自有 Key，当前不可用');
           }
         } else {
           if (s.kind === 'deepseek' || s.kind === 'openai-compat') {
             lines.push('② 搜索：⚠️ 当前主模型无内置检索，请切换搜索通道为 Serper');
           } else {
-            const { docs } = await (async () => {
-              const { createSerperSearch } = await import('../providers/serper');
-              void createSerperSearch;
-              return { docs: [] };
-            })();
             lines.push(`② 搜索 主模型内置（${s.kind === 'glm' ? 'GLM web_search' : 'Gemini google_search'}）：将在开庭时实测`);
           }
         }
@@ -1379,7 +1376,7 @@ function Settings(): React.ReactElement {
 
       <div className="settings-status-grid" aria-label="配置状态">
         <div className={modelReady ? 'is-ready' : 'is-missing'}><b>主模型</b><span>{modelReady ? '已配置' : '必填'}</span></div>
-        <div className={searchReady ? 'is-ready' : 'is-missing'}><b>搜索取证</b><span>{searchReady ? '可用' : '需改用 Serper'}</span></div>
+        <div className={searchReady ? 'is-ready' : 'is-missing'}><b>搜索取证</b><span>{searchReady ? '可用' : s.searchProvider === 'serper' ? '需填写 Serper Key' : '需改用 Serper'}</span></div>
         <div className={audioReady ? 'is-ready' : 'is-optional'}><b>音频转录</b><span>{audioReady ? '已配置' : '按需配置'}</span></div>
       </div>
 
@@ -1448,19 +1445,23 @@ function Settings(): React.ReactElement {
             <label>选择搜索通道</label>
             <div className="settings-choice-grid">
               <button type="button" className={s.searchProvider === 'serper' ? 'is-selected' : ''} onClick={() => setS({ ...s, searchProvider: 'serper' })}>
-                <b>Serper</b><span>默认；共享 Key 每案 60 次。填自有 Key 后应用不限制次数。</span>
+                <b>Serper</b><span>需要自有 Key；请求从浏览器直达 Serper，项目不代收密钥。</span>
               </button>
               <button type="button" className={s.searchProvider === 'provider' ? 'is-selected' : ''} onClick={() => setS({ ...s, searchProvider: 'provider' })}>
                 <b>主模型内置检索</b><span>仅适合 GLM / Gemini；具体额度由模型账户决定。</span>
               </button>
             </div>
-            {!searchReady && <div className="settings-inline-warning">当前供应商没有可用的内置检索，请选择 Serper。</div>}
+            {!searchReady && (
+              <div className="settings-inline-warning">
+                {s.searchProvider === 'serper' ? 'Serper 需要填写你自己的 API Key。' : '当前供应商没有可用的内置检索，请选择 Serper 并填写自有 Key。'}
+              </div>
+            )}
           </div>
           {s.searchProvider === 'serper' && (
             <div className="field field-wide">
-              <label>自有 Serper API Key（选填）</label>
-              <input type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="留空使用共享 Key；高频核查建议填写" />
-              <div className="desc"><a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a> · 自有 Key 仅受服务商账户额度约束。</div>
+              <label>Serper API Key（必填）</label>
+              <input type="password" value={s.serperApiKey} onChange={(e) => setS({ ...s, serperApiKey: e.target.value })} placeholder="填入你自己的 Serper Key" />
+              <div className="desc"><a href="https://serper.dev" target="_blank" rel="noreferrer">前往 serper.dev ↗</a> · Key 只保存在当前浏览器；额度与费用由你的 Serper 账户决定。</div>
             </div>
           )}
           <details className="settings-advanced field-wide">

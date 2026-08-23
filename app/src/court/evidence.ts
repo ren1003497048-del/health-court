@@ -119,6 +119,9 @@ export function evidenceExclusionReason(e: EvidenceItem): string | null {
     return '候选源与被检主体的关系尚未完成确认';
   }
   if ((e.level === 'E3' || e.level === 'E4') && (!e.targetQuote || !e.sourceQuote)) return '缺少可复核的双侧原文引文';
+  if ((e.level === 'E3' || e.level === 'E4') && (e.targetQuoteLocated !== true || e.sourceQuoteLocated !== true)) {
+    return '原文引文未通过定位校验';
+  }
   if (e.targetQuoteLocated === false || e.sourceQuoteLocated === false) return '原文引文未通过定位校验';
   if ((e.level === 'E2' || e.level === 'E3') && e.examVerdict && e.examVerdict !== 'expression_copy') {
     return e.examVerdict === 'fact_relay' ? '属于公共事实转述' : '未确认独特表达对应';
@@ -177,6 +180,85 @@ export function normalizeEvidenceForSources<T extends EvidenceItem>(evidence: T[
 
 export function isAdmissibleEvidence(e: EvidenceItem): boolean {
   return evidenceExclusionReason(e) === null;
+}
+
+/**
+ * 将同一直接来源上的多条“线索级”对应合成为一个可审计的系统性证据组。
+ *
+ * 约束：
+ * - 只接收已经降级的 E3/E4 线索，避免把正式证据重复计数；
+ * - 双侧引文都必须明确通过定位；
+ * - 目标句与来源句分别去重，任一侧重复都不算新的独立对应；
+ * - 已具体标注引用、公共新闻事实、倒序来源和非直接来源不得参与合成。
+ */
+export function buildSystematicOverlapEvidence(
+  sourceId: string,
+  sourceTitle: string,
+  evidence: EvidenceItem[],
+  minimumContributors = 3,
+): EvidenceItem | null {
+  if (!sourceId || minimumContributors < 2) return null;
+
+  const quoteKey = (value: string) => value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  const targetKeys = new Set<string>();
+  const sourceKeys = new Set<string>();
+  const contributors: EvidenceItem[] = [];
+
+  for (const item of evidence) {
+    const detail = (item.detail || {}) as Record<string, unknown>;
+    if (item.sourceId !== sourceId || (item.level !== 'E3' && item.level !== 'E4')) continue;
+    if (detail.systematic || detail.demoted !== true) continue;
+    if (detail.citationState === 'declared_specific' || detail.sharedNewsFact || detail.sourcePostdatesTarget) continue;
+    if (detail.subjectRelation !== 'direct_source') continue;
+    if (!item.targetQuote || !item.sourceQuote || item.targetQuoteLocated !== true || item.sourceQuoteLocated !== true) continue;
+
+    const targetKey = quoteKey(item.targetQuote);
+    const sourceKey = quoteKey(item.sourceQuote);
+    if (!targetKey || !sourceKey || targetKeys.has(targetKey) || sourceKeys.has(sourceKey)) continue;
+    targetKeys.add(targetKey);
+    sourceKeys.add(sourceKey);
+    contributors.push(item);
+  }
+
+  if (contributors.length < minimumContributors) return null;
+
+  const representative = contributors[0];
+  const title = sourceTitle || representative.sourceTitle || sourceId;
+  return {
+    id: `EV-SYS-${sourceId}`,
+    level: 'E3',
+    kind: 'systematic_overlap',
+    plainTitle: '同源多处独立对应',
+    description: `同一直接来源（${title.slice(0, 40)}）上有 ${contributors.length} 组不同的双侧原句通过机械定位；这些线索合并为一个系统性对应证据组，原线索不重复计数。`,
+    sourceId,
+    sourceTitle: representative.sourceTitle || sourceTitle,
+    sourceUrl: representative.sourceUrl,
+    sourceTranscribed: representative.sourceTranscribed,
+    // 卡片主引文只展示一组真实、连续、已定位的代表原句；完整贡献项保存在 detail 中。
+    targetQuote: representative.targetQuote,
+    targetQuoteLocated: true,
+    sourceQuote: representative.sourceQuote,
+    sourceQuoteLocated: true,
+    examVerdict: 'expression_copy',
+    examNote: `由 ${contributors.length} 组双侧已定位、分别去重的同源线索合成；按一个整体证据组计数。`,
+    detail: {
+      systematic: true,
+      contributingEvidence: contributors.map((item) => item.id),
+      systematicContributors: contributors.map((item) => ({
+        id: item.id,
+        level: item.level,
+        title: item.plainTitle || item.kind,
+        targetQuote: item.targetQuote,
+        sourceQuote: item.sourceQuote,
+      })),
+      subjectRelation: 'direct_source',
+      sourcePostdatesTarget: false,
+    },
+  };
 }
 
 export function countAdmissibleEvidenceGroups(evidence: EvidenceItem[]): number {

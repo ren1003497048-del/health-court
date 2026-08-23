@@ -473,9 +473,6 @@ textarea.input-main { min-height: 126px; resize: vertical; line-height: 1.7; }
   55% { transform: rotate(-8deg) scale(0.9); opacity: 1; }
   100% { transform: rotate(-8deg) scale(1); }
 }
-  60% { transform: rotate(12deg) translateY(0); }
-  100% { transform: rotate(0); }
-}
 
 /* ---------- 表格与清单 ---------- */
 .table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -711,13 +708,6 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
   letter-spacing: 0.2em;
   margin-bottom: 4px;
 }
-  58% { transform: translateY(7px) rotate(0); }
-  72% { transform: translateY(-4px) rotate(0); }
-  100% { transform: translateY(0) rotate(0); }
-}
-  58% { opacity: 1; transform: scaleX(1.08); }
-  100% { opacity: 1; transform: scaleX(1); }
-}
 .verdict-word { font-size: clamp(42px, 7vw, 72px); margin: 6px 0 2px; line-height: 1.15; }
 .verdict-note { margin-top: 4px; color: var(--ink-soft); font-size: 12px; letter-spacing: 0.02em; }
 .verdict-jump { display: inline-block; margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
@@ -867,9 +857,6 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
   .argument-grid { grid-template-columns: 1fr !important; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-}
-
 /* ===== v3.5 证据庭审与漫画演出 ===== */
 .brand-lockup { align-items: center; gap: 18px; }
 .logo-cn {
@@ -988,11 +975,6 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
   letter-spacing: .08em;
 }
 .objection-continue:hover { background: var(--vermillion); border-color: var(--vermillion); }
-  60% { transform: rotate(-38deg) translate(-8px,-8px); }
-  70% { transform: rotate(3deg) translate(3px,3px); }
-  76% { transform: rotate(-7deg) translate(-1px,-1px); }
-  84%, 100% { transform: rotate(-19deg) translate(-4px,-3px); }
-}
 @keyframes manga-splash-cycle {
   0%, 66% { opacity: 0; transform: scale(.25) rotate(-12deg); }
   70% { opacity: 1; transform: scale(1.14) rotate(2deg); }
@@ -1041,6 +1023,12 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
 .clue-quote-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .clue-quote-grid blockquote { margin: 0; padding: 10px 11px; background: #fff; border: 1px solid var(--line); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .clue-quote-grid b { display: block; margin-bottom: 5px; font-size: 10.5px; letter-spacing: .08em; }
+.systematic-contributors { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.systematic-contributors summary { cursor: pointer; color: var(--blue); font-size: 12.5px; font-weight: 800; }
+.systematic-contributor { margin-top: 10px; }
+.systematic-contributor > b { display: block; margin-bottom: 4px; font-size: 11.5px; letter-spacing: .04em; }
+.systematic-contributor .palette { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.systematic-contributor .quote-box { margin: 0; }
 .external-claims { margin-top: 22px; padding-top: 2px; }
 .external-claims h3 { margin-bottom: 6px; }
 .external-claims article { padding: 10px 0; border-top: 1px solid var(--line); }
@@ -1070,18 +1058,7 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
   .objection-quotes { grid-template-columns: 1fr; }
   .trial-log-line { grid-template-columns: 64px 58px minmax(0,1fr); font-size: 11.5px; }
   .model-preset-note { flex-direction: column; gap: 3px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-}
-  43% { transform: translate(-15px,-12px) rotate(-10deg) scale(.99); }
-  53% { transform: translate(5px,7px) rotate(3deg) scale(1.02); }
-  59% { transform: translate(0,1px) rotate(-1deg) scale(1); }
-  68%, 100% { transform: translate(-8px,-5px) rotate(-5deg) scale(.98); }
-}
-  53% { opacity: .96; transform: scale(1.03) rotate(0); }
-  61% { opacity: .48; transform: scale(1.1) rotate(1deg); }
-  72%, 100% { opacity: 0; transform: scale(1.18) rotate(2deg); }
+  .systematic-contributor .palette { grid-template-columns: 1fr; }
 }
 
 /* 设置页：先给状态与主选择，把手动端点、抓取和音频收进按需展开层。 */
@@ -1147,9 +1124,5 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
   .settings-grid-nested { grid-template-columns: 1fr; }
   .clue-quote-grid { grid-template-columns: 1fr; }
 }
-
-@media (prefers-reduced-motion: reduce) {
-}
-
 
 /* v3.4 法槌样式已随动画模块移除（2026-08-23 用户拍板：结论页删落锤动画） */

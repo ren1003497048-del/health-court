@@ -9,9 +9,9 @@ export interface ProviderSettings {
   model: string;
   searchModel: string;
   jinaApiKey: string;
-  /** 搜索通道：serper（默认共享Key）/ provider（GLM/Gemini 内置） */
+  /** 搜索通道：serper（用户自带 Key）/ provider（GLM/Gemini 内置） */
   searchProvider: 'serper' | 'provider';
-  /** 用户自填 Serper Key（可选，覆盖共享 Key） */
+  /** 用户自填 Serper Key；静态站点不分发共享密钥。 */
   serperApiKey: string;
   /** 语音转录：groq（免费注册）/ glm（复用GLM Key，需ASR额度） */
   asrKind: 'groq' | 'glm';
@@ -61,7 +61,7 @@ export const DEFAULT_SETTINGS: ProviderSettings = {
   model: 'glm-5.2',
   searchModel: '',
   jinaApiKey: '',
-  searchProvider: 'serper',
+  searchProvider: 'provider',
   serperApiKey: '',
   asrKind: 'groq',
   groqApiKey: '',
@@ -74,7 +74,17 @@ export function loadSettings(): ProviderSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } as ProviderSettings;
+    // 旧版本曾让 Serper 依赖随包发布的共享密钥。对支持内置检索的模型做一次安全迁移；
+    // 已填写自有 Key 的选择保持不变，避免改写用户的明确配置。
+    if (
+      settings.searchProvider === 'serper'
+      && !settings.serperApiKey.trim()
+      && (settings.kind === 'glm' || settings.kind === 'gemini')
+    ) {
+      settings.searchProvider = 'provider';
+    }
+    return settings;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
