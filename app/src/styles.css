@@ -1152,30 +1152,4 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
 }
 
 
-/* ===== v3.4 法槌：黑白线条漫画 ===== */
-.gavel-stage { display: flex; align-items: center; justify-content: center; width: 132px; height: 84px; margin: 0 auto; }
-.gavel-svg { width: 100%; height: 100%; overflow: visible; }
-.gavel-svg .g-head, .gavel-svg .g-head-rest { fill: #fff; stroke: var(--ink, #171817); stroke-width: 2.6; }
-.gavel-svg .g-band, .gavel-svg .g-band-rest { fill: none; stroke: var(--ink, #171817); stroke-width: 1.6; }
-.gavel-svg .g-handle, .gavel-svg .g-handle-rest { fill: none; stroke: var(--ink, #171817); stroke-width: 2.4; stroke-linecap: round; }
-.gavel-svg .g-tip { fill: none; stroke: var(--ink, #171817); stroke-width: 1.4; opacity: 0.65; }
-.gavel-svg .g-sound-block { fill: var(--ink, #171817); }
-/* 摆臂：从右上 50° 蓄力位砸向 0°（把手末端微位移=translate 补偿），加速度用负前段贝塞尔 */
-.gavel-svg .gavel-arm {
-  transform-origin: 86px 67px;
-  animation: gavel-strike 0.9s cubic-bezier(0.6, -0.35, 0.85, 1.5) 0.35s 1 both;
-}
-@keyframes gavel-strike {
-  0%   { transform: rotate(-50deg) translate(0, 0); opacity: 0; }
-  12%  { transform: rotate(-50deg) translate(0, 0); opacity: 1; }
-  62%  { transform: rotate(-2deg) translate(1.5px, 1px); }
-  74%  { transform: rotate(-6deg) translate(0.5px, 0.3px); }
-  88%  { transform: rotate(-1deg) translate(1.8px, 1.2px); }
-  100% { transform: rotate(-2deg) translate(1.2px, 0.8px); opacity: 1; }
-}
-.gavel-svg .gavel-rest { opacity: 0; animation: gavel-rest-in 0.25s ease-out 0.95s 1 both; }
-@keyframes gavel-rest-in { from { opacity: 0; } to { opacity: 1; } }
-/* 敲击线：命中后闪现（黑白两阶） */
-.gavel-svg .g-impact-line { stroke: var(--ink, #171817); stroke-width: 2; stroke-linecap: round; opacity: 0; animation: gavel-flash 0.35s ease-out 0.78s 1 both; }
-@keyframes gavel-flash { 0% { opacity: 0; } 35% { opacity: 0.9; } 100% { opacity: 0; } }
-.gavel-svg .g-impact-line.l2 { animation-delay: 0.84s; }
+/* v3.4 法槌样式已随动画模块移除（2026-08-23 用户拍板：结论页删落锤动画） */
