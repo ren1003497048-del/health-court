@@ -15,9 +15,6 @@ import {
 import { DEFAULT_SETTINGS, defaultPresetForProvider, presetsForProvider } from '../store/local';
 import { stripMarkdownMedia } from '../court/chromeStrip';
 
-const gavelSwingUrl = new URL('../assets/gavel-swing-v2.png', import.meta.url).href;
-const gavelImpactUrl = new URL('../assets/gavel-impact-v2.png', import.meta.url).href;
-
 export type Tab = 'court' | 'archive' | 'settings' | 'about';
 
 const STAGES = ['立案', '侦查', '检索', '对质', '宣判'] as const;
@@ -299,77 +296,68 @@ export function App(): React.ReactElement {
     }
   };
 
-  /** v2.2 候选源转录：高相似候选本身是播客单集时，取转录稿替代浅层 shownotes 对质 */
-  const transcribeCandidates = async (cf: CaseFile, rt: any, s: any, maxCount = 3) => {
+  /** v2.2 候选源转录：高相似候选本身是播客单集时，取转录稿替代浅层 shownotes 对质
+   *  v3.5 波次化：改为单源回调（runWaves 注入），maxCount 语义废弃 */
+  const transcribeCandidate = async (cf: CaseFile, rt: any, s: any, src: any): Promise<boolean> => {
     const asrKind: 'groq' | 'glm' = s.asrKind === 'glm' ? 'glm' : 'groq';
     const asrKey = asrKind === 'glm' ? s.apiKey : s.groqApiKey;
     if (!asrKey) {
       logSinkRef.current('检索', '未配置 ASR Key：候选播客源不转录，以页面文本对质（比对深度受限）');
-      return;
+      return false;
     }
-    const { locateEpisodeAudio } = await import('../providers/episodeLocate');
-    const { transcribeAudioUrl } = await import('../pipeline/transcribe');
-    const pool = (rt.sources as any[])
-      .filter((src) => /xiaoyuzhoufm\.com\/episode|podcasts\.apple\.com.*\?i=|open\.spotify\.com\/episode|getpodcast\.com|musixmatch\.com\/podcast|deezer\.com\/episode|podtail\.com|podcast-addict\.com|podcastrex\.com/.test(src.url || ''))
-      .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-      .slice(0, maxCount);
-    for (const src of pool) {
-      if (src.transcribed) continue; // 已转录过
-      // v2.2.6 修正：fullText 长度不能代表内容深度——Apple/Spotify 壳页 20KB+ 全是导航+shownotes。
-      // 壳页特征：导航链接密度极高（](https:// 短链接串）且无对话转录特征（无时间戳/无长句段）
-      const isShellPage = (() => {
-        const ft = src.fullText || '';
-        if (ft.length < 3000) return false; // 短页面按原逻辑（浅文本，值得转录）
-        const navLinks = (ft.match(/\]\(https?:\/\//g) || []).length;
-        const words = ft.split(/\s+/).length;
-        // 每 100 词超 8 个 markdown 链接 → 壳页（导航/目录页），shownotes 深度不足，仍需转录
-        return navLinks / Math.max(1, words / 100) > 8;
-      })();
-      if (src.fullText && src.fullText.length > 5000 && !isShellPage) continue; // 真有足量正文（如 musixmatch 转录稿页）
-      try {
-        logSinkRef.current('检索', `候选源 ${src.id} 为播客单集（相似度 ${src.similarity ?? '?'}），启动转录取全文…`);
-        const located = await locateEpisodeAudio(src.url, { jinaKey: s.jinaApiKey || undefined });
-        if (!located.ok) {
-          logSinkRef.current('检索', `候选源 ${src.id} 音频定位失败：${located.reason.slice(0, 80)}`);
-          continue;
-        }
-        let segments: any[] = [];
-        let fullText = '';
-        {
-          // 2026-08-22 N8CGYU 案（54分钟超时根因之一）：首块闸门——先转第 1 块，
-          // 与目标指纹英文词做词面相关度检查，不相关即中止（预算留给下一源）。
-          const targetEn = ((cf as any).fingerprints || []).flatMap((f: any) => f.searchKeywordsEn || []).join(' ').slice(0, 400);
-          const first = await transcribeAudioUrl(
-            located.audio.audioUrl,
-            { kind: asrKind, apiKey: asrKey },
-            (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}（首块闸门判定中）`),
-            { maxChunks: 1 },
-          );
-          const probe = (first.fullText || '').slice(0, 12000);
-          const kw = targetEn.split(/[^A-Za-z0-9]+/).filter((w: string) => w.length >= 5);
-          const hits = kw.filter((w: string) => probe.toLowerCase().includes(w.toLowerCase())).length;
-          if (kw.length >= 3 && hits === 0) {
-            logSinkRef.current('检索', `候选源 ${src.id} 首块闸门：首块未见任何指纹相关词——中止剩余转录（预算转移）`);
-            continue;
-          }
-          logSinkRef.current('检索', `候选源 ${src.id} 首块闸门通过（相关词 ${hits}/${kw.length}）——继续全量转录`);
-          const rest = await transcribeAudioUrl(
-            located.audio.audioUrl,
-            { kind: asrKind, apiKey: asrKey },
-            (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}`),
-          );
-          segments = rest.segments;
-          fullText = rest.fullText;
-        }
-        if (fullText.length > 2000) {
-          src.fullText = fullText;
-          src.partial = false;
-          src.transcribed = true;
-          logSinkRef.current('检索', `候选源 ${src.id} 转录完成：${fullText.length} 字符，${segments.length} 段——以转录稿对质`);
-        }
-      } catch (e: any) {
-        logSinkRef.current('检索', `候选源 ${src.id} 转录失败（${String(e?.message || e).slice(0, 80)}），保留页面文本`);
+    if (src.transcribed) return true;
+    const isPodcastEpisode = /xiaoyuzhoufm\.com\/episode|podcasts\.apple\.com.*\?i=|open\.spotify\.com\/episode|getpodcast\.com|musixmatch\.com\/podcast|deezer\.com\/episode|podtail\.com|podcast-addict\.com|podcastrex\.com/.test(src.url || '');
+    if (!isPodcastEpisode) return false;
+    const isShellPage = (() => {
+      const ft = src.fullText || '';
+      if (ft.length < 3000) return false; // 短页面按原逻辑（浅文本，值得转录）
+      const navLinks = (ft.match(/\]\(https?:\/\//g) || []).length;
+      const words = ft.split(/\s+/).length;
+      return navLinks / Math.max(1, words / 100) > 8;
+    })();
+    if (src.fullText && src.fullText.length > 5000 && !isShellPage) return false; // 真有足量正文
+    try {
+      const { locateEpisodeAudio } = await import('../providers/episodeLocate');
+      const { transcribeAudioUrl } = await import('../pipeline/transcribe');
+      logSinkRef.current('检索', `候选源 ${src.id} 为播客单集（相似度 ${src.similarity ?? '?'}），启动转录取全文…`);
+      const located = await locateEpisodeAudio(src.url, { jinaKey: s.jinaApiKey || undefined });
+      if (!located.ok) {
+        logSinkRef.current('检索', `候选源 ${src.id} 音频定位失败：${located.reason.slice(0, 80)}`);
+        return false;
       }
+      // 2026-08-22 N8CGYU 案（54分钟超时根因之一）：首块闸门——先转第 1 块，
+      // 与目标指纹英文词做词面相关度检查，不相关即中止（预算留给下一源）。
+      const targetEn = ((cf as any).fingerprints || []).flatMap((f: any) => f.searchKeywordsEn || []).join(' ').slice(0, 400);
+      const first = await transcribeAudioUrl(
+        located.audio.audioUrl,
+        { kind: asrKind, apiKey: asrKey },
+        (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}（首块闸门判定中）`),
+        { maxChunks: 1 },
+      );
+      const probe = (first.fullText || '').slice(0, 12000);
+      const kw = targetEn.split(/[^A-Za-z0-9]+/).filter((w: string) => w.length >= 5);
+      const hits = kw.filter((w: string) => probe.toLowerCase().includes(w.toLowerCase())).length;
+      if (kw.length >= 3 && hits === 0) {
+        logSinkRef.current('检索', `候选源 ${src.id} 首块闸门：首块未见任何指纹相关词——中止剩余转录（预算转移）`);
+        return false;
+      }
+      logSinkRef.current('检索', `候选源 ${src.id} 首块闸门通过（相关词 ${hits}/${kw.length}）——继续全量转录`);
+      const rest = await transcribeAudioUrl(
+        located.audio.audioUrl,
+        { kind: asrKind, apiKey: asrKey },
+        (pr) => logSinkRef.current('检索', `候选源 ${src.id} 转录进度 ${pr.doneChunks}/${pr.totalChunks}`),
+      );
+      if (rest.fullText.length > 2000) {
+        src.fullText = rest.fullText;
+        src.partial = false;
+        src.transcribed = true;
+        logSinkRef.current('检索', `候选源 ${src.id} 转录完成：${rest.fullText.length} 字符，${rest.segments.length} 段——以转录稿对质`);
+        return true;
+      }
+      return false;
+    } catch (e: any) {
+      logSinkRef.current('检索', `候选源 ${src.id} 转录失败（${String(e?.message || e).slice(0, 80)}），保留页面文本`);
+      return false;
     }
   };
 
@@ -514,15 +502,21 @@ export function App(): React.ReactElement {
       setRunning((r) => (r ? { ...r, stageIndex: 2, fingerprints: cf.fingerprints.length } : r));
       await pipeline.discovery(cf, rt);
       setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
-      await transcribeCandidates(cf, rt, s);
-      let evidence = await pipeline.crossExamination(cf, rt);
+      // v3.5 波次检索：核心 3 源全流程 → 证据不足扩至 8 → 仍不足并入补充取证（硬上限 14）。
+      // 替代原「transcribeCandidates + 全量 crossExamination + 补源后整体重跑」（21 源/54 分钟根因）。
+      const { runWaves, wave3Supplement } = await import('../pipeline/waves');
+      let evidence = await runWaves(cf, rt, pipeline.crossExamination, {
+        transcribe: (src) => transcribeCandidate(cf, rt, s, src),
+      });
+      setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
       if (pipeline.shouldSupplementEvidence(evidence, rt.sources)) {
         const added = await pipeline.supplementalDiscovery(cf, rt, evidence);
         if (added > 0) {
           setRunning((r) => (r ? { ...r, stageIndex: 2, sources: [...rt.sources] } : r));
-          await transcribeCandidates(cf, rt, s);
+          evidence = await wave3Supplement(cf, rt, pipeline.crossExamination, {
+            transcribe: (src) => transcribeCandidate(cf, rt, s, src),
+          });
           setRunning((r) => (r ? { ...r, stageIndex: 3 } : r));
-          evidence = await pipeline.crossExamination(cf, rt);
         }
       }
       // 对质证据先完整落位，再进入异议演出；宣判阶段只在演出结束后点亮。

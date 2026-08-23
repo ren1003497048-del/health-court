@@ -85,7 +85,7 @@ export async function transcribeAudioUrl(
   audioUrl: string,
   cfg: AsrConfig,
   onProgress?: (p: TranscribeProgress) => void,
-  opts?: { maxChunks?: number },
+  opts?: { maxChunks?: number; asrConcurrency?: number },
 ): Promise<{ segments: AsrSegment[]; fullText: string; durationSec: number }> {
   const audio = await fetchDecode(audioUrl);
   const mono = resampleMono(audio);
@@ -95,19 +95,33 @@ export async function transcribeAudioUrl(
   const chunksToDo = Math.min(totalChunks, opts?.maxChunks ?? totalChunks); // 首块闸门截断
   const all: AsrSegment[] = [];
 
-  for (let ci = 0; ci < chunksToDo; ci++) {
-    const startIdx = ci * chunkSec * TARGET_SR;
-    const endIdx = Math.min(mono.length, startIdx + chunkSec * TARGET_SR);
-    const slice = mono.subarray(startIdx, endIdx);
-    const wav = encodeWav(slice, TARGET_SR);
-    onProgress?.({
-      totalChunks,
-      doneChunks: ci,
-      currentMinutes: `${Math.floor(startIdx / TARGET_SR / 60)}–${Math.floor(endIdx / TARGET_SR / 60)} 分钟`,
-    });
-    const segs = await transcribeAudio(wav, cfg);
-    const offset = ci * chunkSec;
-    for (const s of segs) all.push({ text: s.text, start: s.start + offset, end: s.end + offset });
+  // v3.5 优化②（波次同批已批）：ASR 块级并发——信号量控制 2 路并发（Groq 免费档
+  // ~30RPM：10 分钟块 ≈ 每 40-70 秒一次请求，2 路并发峰值 ~3-4 RPM，远低于限流阈值）。
+  // 结果按块序写回，合并时间戳保持顺序稳定。
+  const CONCURRENCY = Math.max(1, Math.min(2, opts?.asrConcurrency ?? 2));
+  const results: AsrSegment[][] = new Array(chunksToDo);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (true) {
+      const ci = nextIdx++;
+      if (ci >= chunksToDo) return;
+      const startIdx = ci * chunkSec * TARGET_SR;
+      const endIdx = Math.min(mono.length, startIdx + chunkSec * TARGET_SR);
+      const slice = mono.subarray(startIdx, endIdx);
+      const wav = encodeWav(slice, TARGET_SR);
+      onProgress?.({
+        totalChunks,
+        doneChunks: results.filter((r) => r !== undefined).length,
+        currentMinutes: `${Math.floor(startIdx / TARGET_SR / 60)}–${Math.floor(endIdx / TARGET_SR / 60)} 分钟`,
+      });
+      const segs = await transcribeAudio(wav, cfg);
+      const offset = ci * chunkSec;
+      results[ci] = segs.map((s) => ({ text: s.text, start: s.start + offset, end: s.end + offset }));
+    }
+  };
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+  for (const segs of results) {
+    if (segs) for (const s of segs) all.push(s);
   }
 
   // 合并为整段文本（带相对时间戳，供判决书引用定位）

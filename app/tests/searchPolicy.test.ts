@@ -53,10 +53,12 @@ describe('evidence and supplemental-search policy', () => {
   it('requests one supplemental round when concrete clues exist but the filing threshold is unmet', () => {
     expect(shouldSupplementEvidence([clue({ subjectRelation: 'unknown' })], [source({ subjectRelation: 'unknown' })])).toBe(true);
     expect(shouldSupplementEvidence([], [source({ similarity: 20 })])).toBe(false);
+    // v3.5 波次纪律：正式证据已达立案门槛（3 条可采信 ≥ 2 组）即不再补源——
+    // 提前终止优先于扩张（旧策略「高相似候选恒补源」是 21 源恶性循环的推手，已废除）
     expect(shouldSupplementEvidence([
       clue({ subjectRelation: 'direct_source' }),
       { ...clue({ subjectRelation: 'direct_source' }), id: 'EV-FP2-SRC1' },
       { ...clue({ subjectRelation: 'direct_source' }), id: 'EV-FP3-SRC1' },
-    ], [source({ similarity: 88 })])).toBe(true);
+    ], [source({ similarity: 88 })])).toBe(false);
   });
 });

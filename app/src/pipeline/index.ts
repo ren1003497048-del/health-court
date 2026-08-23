@@ -51,6 +51,8 @@ export interface CourtRuntime {
   controversyNotes?: { title: string; url: string; snippet?: string }[];
   /** 检索轮次审计；写入判决书，避免“多轮”只有日志没有结构化记录。 */
   searchAudit?: { rounds: number; queries: number; supplementalQueries: number; supplementalSources: number };
+  /** v3.5 波次对质登记簿：已过堂源 id（跨波共享，第 3 波增量判定依据） */
+  waveExaminedIds?: Set<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -772,13 +774,15 @@ async function verifySourceRelations(cf: CaseFile, rt: CourtRuntime, sources: So
   }
 }
 
-/** 当首轮已有具体相似线索但正式证据不足时，至多追加一轮证据导向检索。 */
+/** 当首轮已有具体相似线索但正式证据不足时，至多追加一轮证据导向检索。
+ *  v3.5 波次纪律：正式证据已达立案门槛（≥2 组）即不再补源——提前终止优先于扩张。 */
 export function shouldSupplementEvidence(evidence: EvidenceItem[], sources: SourceDoc[]): boolean {
   if (sources.length >= 22) return false;
   const underThreshold = countAdmissibleEvidenceGroups(evidence) < MIN_ADMISSIBLE_EVIDENCE_GROUPS;
+  if (!underThreshold) return false; // 已凑足立案门槛——尊重波次提前终止，不再扩张
   const hasConcreteClue = evidence.some((item) => item.level === 'E2' || item.level === 'E3' || item.level === 'E4');
   const hasHighSimilarityCandidate = sources.some((source) => (source.similarity ?? 0) >= 75);
-  return hasHighSimilarityCandidate || (underThreshold && hasConcreteClue);
+  return hasHighSimilarityCandidate || hasConcreteClue;
 }
 
 export async function supplementalDiscovery(
@@ -906,8 +910,15 @@ export async function supplementalDiscovery(
 // 阶段四：对质
 // ---------------------------------------------------------------------------
 
-export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<EvidenceItem[]> {
-  const evidence: EvidenceItem[] = [];
+export async function crossExamination(
+  cf: CaseFile,
+  rt: CourtRuntime,
+  opts?: { sourceFilter?: (src: SourceDoc) => boolean },
+): Promise<EvidenceItem[]> {
+  const priorEvidence = opts?.sourceFilter ? rt.evidence.slice() : [];
+  const evidence: EvidenceItem[] = priorEvidence;
+  const inScope = (src: SourceDoc) => !opts?.sourceFilter || opts.sourceFilter(src);
+  const scopedSources = rt.sources.filter(inScope);
   if (rt.sources.length === 0) {
     rt.log('对质', '无候选源可对质');
     return evidence;
@@ -916,6 +927,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   // 4.1 结构对齐（v2.2：对 top 4 源做——相似度排序后的前四）
   const targetSeg = truncateSmart(cf.target.text, 12000);
   for (const src of rt.sources.slice(0, 4)) {
+    if (!inScope(src)) continue; // v3.5 波次：只对新增/指定源重跑结构对齐
     if (!src.fullText || src.fullText.length < 500) continue;
     rt.log('对质', `结构鉴定官比对 ${src.id}（${src.title.slice(0, 36)}）…`);
     try {
@@ -949,7 +961,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   }
 
   // 4.1b v2.2 候选源 AI 摘要（对全部入卷源）：语言、内容类型、主题、与目标的重合点
-  for (const src of rt.sources) {
+  for (const src of scopedSources) {
     if (src.aiSummary && src.aiSummary.length > 30) continue; // 排序阶段已有 why 的不重做
     try {
       const su = await chatJson<any>(
@@ -974,8 +986,8 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     // v2.2.10（89YX6D 案用户拍板）：宏观结构证据只对【已转录源】产出——
     // 通史/百科源覆盖大纲是常识性主题映射（KKK 定义/三次崛起在任何 KKK 百科都"实质对应"），
     // 不构成"集中接触痕迹"的信息量；未转录源只做注记。
-    const macroPool = rt.sources.filter((s) => s.transcribed).slice(0, 4);
-    const silentChecked = rt.sources.filter((s) => !s.transcribed && (s.fullText || '').length >= 800);
+    const macroPool = rt.sources.filter((s) => inScope(s) && s.transcribed).slice(0, 4);
+    const silentChecked = rt.sources.filter((s) => inScope(s) && !s.transcribed && (s.fullText || '').length >= 800);
     if (silentChecked.length) {
       rt.log('对质', `宏观结构：${silentChecked.length} 个未转录源（通史/百科类）仅注记已比对，不产出结构证据（主题级覆盖不构成接触痕迹）`);
     }
@@ -1030,9 +1042,39 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     return segs;
   };
 
-  rt.log('对质', `指纹验证官开始验证 ${cf.fingerprints.length} 个指纹 × ${rt.sources.length} 个源（长源分段送检）…`);
+  rt.log('对质', `指纹验证官开始验证 ${cf.fingerprints.length} 个指纹 × ${scopedSources.length} 个源（长源分段送检）…`);
+  // v3.5 优化①（波次同批已批）：指纹验证领域预筛——每源一次廉价调用先问「领域重合度
+  // + 是否含数据/案例材料」，通史/百科类低分源跳过逐段指纹验证（78 次盲扫 → 15-20 次）。
+  const PRESCREEN_SYSTEM =
+    'You pre-screen ONE candidate source for fingerprint verification. Given the target topic and fingerprint keywords, judge: domain = does the source discuss the SAME specific subject/narrative territory as the target (not just the broad era or field); specificity = does it contain concrete data, named cases, or archival material (not encyclopedic overview). Output only JSON: {"domain":"on|adjacent|off","specificity":"concrete|overview","score":0-100,"note":"one short Chinese phrase"}. score combines both: an encyclopedic overview of the right era is low; a concrete piece on the same subject is high.';
+  const fpVerifiedSources: SourceDoc[] = [];
+  for (const s of scopedSources) {
+    const hay = `${s.title || ''}\n${(s.fullText || s.snippet || '').slice(0, 3000)}`;
+    const kwLine = (cf.fingerprints || []).flatMap((f) => f.searchKeywordsEn || []).slice(0, 8).join(', ');
+    let pass = true;
+    let note = '';
+    try {
+      const pre = await chatJson<any>(
+        rt.provider.chat,
+        PRESCREEN_SYSTEM,
+        `目标主题：${cf.profile?.topicDomain || cf.target.title}\n指纹关键词：${kwLine || '（无）'}\n\n候选源 ${s.id}：${hay.slice(0, 3200)}`,
+        { maxTokens: 200 },
+      );
+      const score = Math.max(0, Math.min(100, +pre.score || 0));
+      pass = score >= 40;
+      note = String(pre.note || '');
+    } catch {
+      pass = true; // 预筛失败不拦截（宁多扫不漏扫）
+      note = '预筛调用失败，保守放行';
+    }
+    if (pass) {
+      fpVerifiedSources.push(s);
+    } else {
+      rt.log('对质', `指纹预筛：${s.id}（${s.title.slice(0, 30)}）领域重合度低（${note}），跳过指纹验证——通史/百科类源不含目标的具体材料`);
+    }
+  }
   const allResults: any[] = [];
-  for (const s of rt.sources) {
+  for (const s of fpVerifiedSources) {
     const segs = segmentsOf(s);
     for (const seg of segs) {
       try {
@@ -1077,6 +1119,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   const PROBE_SYSTEM =
     'You are a detail comparison officer. Compare a Chinese podcast transcript excerpt against ONE candidate source text. Find the MOST SPECIFIC overlap between them (shared rare case, data combination, idiosyncratic phrasing, argument-chain ordering, or error). QUOTES MUST BE CONTINUOUS PASSAGES, not isolated sentences: targetQuote = a coherent Chinese passage of at least 3 consecutive sentences (>=80 characters) from the transcript; sourceQuote = the corresponding continuous passage from the source (>=2 consecutive sentences). If the strongest overlap is only a single common sentence, a public fact, or mere topic-level similarity, output found=false. Output only JSON: {"found":true|false,"targetQuote":"...","sourceQuote":"...","what":"what specifically overlaps (Chinese, one sentence)","type":"rare_case|data_combo|phrasing|ordering|error|none"}';
   for (const src of rt.sources.slice(0, 3)) {
+    if (!inScope(src)) continue; // v3.5 波次：细比对只对新增/指定源
     if (!src.fullText || src.fullText.length < 400) continue;
     // 已有该源的 E3/E4 证据则跳过（不重复产证）
     if (evidence.some((e) => e.sourceId === src.id && (e.level === 'E3' || e.level === 'E4'))) continue;
@@ -1138,6 +1181,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
+    if (ev.examVerdict) continue; // v3.5 增量对质：已检定过的旧证据不重复检定
     // v2.2.6：结构类 E2（宏观结构/论证链同构）走定位校验而非引文检定——其可靠性来自
     // 覆盖率阈值（60%）+源摘录逐条定位；引文式检定不适用于结构证据
     // v3.4（UW31GR 案）：论证链同构类 E2（非 macro、链环节≥3、置信≥0.85）同样免引文检定——
@@ -1201,6 +1245,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E4') continue;
     if (!ev.targetQuote || !ev.sourceQuote) continue;
+    if (ev.plainTitle) continue; // v3.5 增量对质：已有转述的旧证据不重复生成
     try {
       const pa = await chatJson<any>(
         rt.provider.chat,
@@ -1222,6 +1267,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     if (cits.length) {
       for (const ev of evidence) {
         if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+        if ((ev.detail as any)?.citationState) continue; // v3.5 增量：已标注引用状态的旧证据跳过
         const srcDoc = rt.sources.find((x) => x.id === ev.sourceId);
         const srcTitle = (srcDoc?.title || '').slice(0, 30);
         // 匹配：声明来源与证据源标题/URL 的词面交集（中文书名或英文名匹配）
@@ -1274,6 +1320,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     const bySource = new Map<string, typeof evidence>();
     for (const ev of evidence) {
       if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+      if ((ev.detail as any)?.systematic) continue; // v3.5 增量：系统性相似组自身不重复计入
       const key = String(ev.sourceId || '');
       if (!bySource.has(key)) bySource.set(key, []);
       bySource.get(key)!.push(ev);
@@ -1322,6 +1369,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     };
     for (const ev of evidence) {
       if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+      if ((ev.detail as any)?.contextVerified !== undefined) continue; // v3.5 增量：旧证据不重复披露
       const src = rt.sources.find((x) => x.id === ev.sourceId);
       const ct = ev.targetQuote ? buildContext((ev.detail as any)?.hitPhraseTarget || ev.targetQuote, cf.target.text) : undefined;
       const cs = ev.sourceQuote && src?.fullText ? buildContext((ev.detail as any)?.hitPhraseSource || ev.sourceQuote, src.fullText) : undefined;
@@ -1361,6 +1409,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     };
     for (const ev of evidence) {
       if (ev.level !== 'E3' && ev.level !== 'E4') continue;
+      if ((ev.detail as any)?.expandedTargetQuote !== undefined) continue; // v3.5 增量：旧证据不重复扩展
       const src = rt.sources.find((x) => x.id === ev.sourceId);
       const hitPhraseTarget = (ev.detail as any)?.hitPhraseTarget || ev.targetQuote;
       const hitPhraseSource = (ev.detail as any)?.hitPhraseSource || ev.sourceQuote;
@@ -1416,7 +1465,7 @@ export async function crossExamination(cf: CaseFile, rt: CourtRuntime): Promise<
     // 聚合条目描述带源数
     for (const g of groups) {
       const d = (g.detail || {}) as any;
-      if (d.alsoSources?.length > 1) {
+      if (d.alsoSources?.length > 1 && !/\（该对应在 \d+ 个独立源中同时命中\）$/.test(g.description)) {
         g.description = `${g.description}（该对应在 ${d.alsoSources.length} 个独立源中同时命中）`;
       }
     }
