@@ -163,10 +163,10 @@ npm run build    # 构建到 app/dist
 ## 🙏 致谢
 
 - 豆瓣「每天都在听播客」小组
-- 主播仲树与“独树不成林”栏目
 - 电子游戏《逆转裁判》（CAPCOM）——法庭演出“异议”的灵感来源
+- 仲树与“独树不成林”栏目
 
-本项目借鉴了开发者的 [dushu-content-review](https://github.com/ren1003497048-del/dushu-content-review)（播客抄袭鉴定）中的 E1—E5 证据分级方法，并参考了 [fact-check](https://github.com/ren1003497048-del/fact-check)（基于 AI 的真实信息验证工具）的开源实践。
+本项目借鉴了开发者本人的 [dushu-content-review](https://github.com/ren1003497048-del/dushu-content-review)（播客抄袭鉴定）中的 E1—E5 证据分级方法，并参考了 [fact-check](https://github.com/ren1003497048-del/fact-check)（基于 AI 的真实信息验证工具）的开源实践。
 
 **欢迎提交 Issue、补充案例或参与改进。**
 
@@ -180,7 +180,7 @@ npm run build    # 构建到 app/dist
 
 <div align="center">
 
-**⚖️ 证据应当能够被阅读，也应当能够被反驳。**
+**⚖️ 适度创作益脑，沉迷AI伤身。拒绝循环文本，守护精神卫生。**
 
 [在线开庭](https://ren1003497048-del.github.io/health-court/) · [提交 Issue](https://github.com/ren1003497048-del/health-court/issues) · [返回顶部](#top)
 
