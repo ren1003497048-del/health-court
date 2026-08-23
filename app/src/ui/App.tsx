@@ -437,11 +437,35 @@ export function App(): React.ReactElement {
         scrollLog();
       };
 
-      const rt = { provider, fetcher, log: pushLog, evidence: [] as EvidenceItem[], sources: [] as SourceDoc[], processLog: logs };
+      const rt: any = { provider, fetcher, log: pushLog, evidence: [] as EvidenceItem[], sources: [] as SourceDoc[], processLog: logs };
       const pipeline = await import('../pipeline');
 
       const inputObj = input.trim() ? { url: input.trim(), text: bodyText.trim() || undefined } : { text: bodyText };
       let cf: CaseFile;
+      // v3.6 续跑：快照存在且与当前输入同案时从快照恢复（provider 已重建，材料回填）
+      let resumeFrom: import('../store/trialSnapshot').TrialSnapshot | null = null;
+      try {
+        const { loadTrialSnapshot } = await import('../store/trialSnapshot');
+        const snap = loadTrialSnapshot();
+        const sameCase = snap && (
+          (input.trim() && (snap.cf.input.url === input.trim() || (snap.cf.target.text || '').slice(0, 120) === (bodyText || '').trim().slice(0, 120))) ||
+          (!input.trim() && (bodyText || '').trim().length > 0 && (snap.cf.target.text || '').slice(0, 120) === bodyText.trim().slice(0, 120))
+        );
+        if (sameCase) resumeFrom = snap;
+      } catch { /* 快照不可用即全新开审 */ }
+      const stageZh: Record<string, string> = { filed: '立案', investigated: '侦查', discovered: '检索', waves: '对质', supplemented: '宣判' };
+      if (resumeFrom) {
+        cf = resumeFrom.cf;
+        rt.sources = resumeFrom.sources;
+        rt.evidence = resumeFrom.evidence;
+        rt.waveExaminedIds = new Set(resumeFrom.waveExaminedIds || []);
+        const priorLogs = resumeFrom.logs || [];
+        for (const l of priorLogs) logs.push(l);
+        pushLog('立案', `检测到上次庭审中断快照（保存于 ${new Date(resumeFrom.savedAt).toLocaleString('zh-CN', { hour12: false })}），从「${stageZh[resumeFrom.stage] || resumeFrom.stage}」之后续跑——已完成的取证与检索不重复消耗`);
+        pushLog('检索', `快照回填：候选源 ${rt.sources.length} 个、证据 ${rt.evidence.length} 条、已对质源 ${(rt.waveExaminedIds || []).length} 个`);
+        beginSearchCase(cf.caseId);
+        setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources, fingerprints: cf.fingerprints.length } : r));
+      } else {
       try {
         cf = await pipeline.filing(inputObj, rt);
       } catch (e: any) {
@@ -496,20 +520,39 @@ export function App(): React.ReactElement {
           throw new Error('__MENTAL_HYGIENE__');
         }
       }
+      } // ← v3.6：else（非续跑）块闭合——立案与预审只在全新开审时执行
       beginSearchCase(cf.caseId);
-      setRunning((r) => (r ? { ...r, stageIndex: 1 } : r));
-      await pipeline.investigation(cf, rt);
-      setRunning((r) => (r ? { ...r, stageIndex: 2, fingerprints: cf.fingerprints.length } : r));
-      await pipeline.discovery(cf, rt);
-      setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
+      if (!resumeFrom) {
+        setRunning((r) => (r ? { ...r, stageIndex: 1 } : r));
+        await pipeline.investigation(cf, rt);
+        setRunning((r) => (r ? { ...r, stageIndex: 2, fingerprints: cf.fingerprints.length } : r));
+      }
+      // v3.6 快照：侦查完成（画像/指纹就位）——中断后可从检索阶段续跑
+      { const { saveTrialSnapshot } = await import('../store/trialSnapshot');
+        saveTrialSnapshot({ version: 1, savedAt: new Date().toISOString(), stage: 'investigated', cf, sources: rt.sources, evidence: rt.evidence, logs: logs.slice() }); }
+      if (!resumeFrom || resumeFrom.stage === 'investigated') {
+        // 全新开审、或快照停在侦查完成——需要跑检索；更晚的快照直接复用已入卷候选源
+        await pipeline.discovery(cf, rt);
+        setRunning((r) => (r ? { ...r, stageIndex: 3, sources: rt.sources } : r));
+        // v3.6 快照：检索完成（候选源已入卷）——中断后可跳过 7 轮检索直接进波次
+        { const { saveTrialSnapshot } = await import('../store/trialSnapshot');
+          saveTrialSnapshot({ version: 1, savedAt: new Date().toISOString(), stage: 'discovered', cf, sources: rt.sources, evidence: rt.evidence, logs: logs.slice() }); }
+      }
       // v3.5 波次检索：核心 3 源全流程 → 证据不足扩至 8 → 仍不足并入补充取证（硬上限 14）。
       // 替代原「transcribeCandidates + 全量 crossExamination + 补源后整体重跑」（21 源/54 分钟根因）。
       const { runWaves, wave3Supplement } = await import('../pipeline/waves');
-      let evidence = await runWaves(cf, rt, pipeline.crossExamination, {
-        transcribe: (src) => transcribeCandidate(cf, rt, s, src),
-      });
+      const resumePastWaves = !!resumeFrom && (resumeFrom.stage === 'waves' || resumeFrom.stage === 'supplemented');
+      let evidence: EvidenceItem[] = resumePastWaves
+        ? rt.evidence // 续跑：第 1-2 波已完成，直接复用快照证据（重跑会产生重复 E2）
+        : await runWaves(cf, rt, pipeline.crossExamination, {
+            transcribe: (src) => transcribeCandidate(cf, rt, s, src),
+          });
       setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
-      if (pipeline.shouldSupplementEvidence(evidence, rt.sources)) {
+      // v3.6 快照：波次完成（有已对质登记）——中断后可从第 3 波/补源续跑
+      { const { saveTrialSnapshot } = await import('../store/trialSnapshot');
+        saveTrialSnapshot({ version: 1, savedAt: new Date().toISOString(), stage: 'waves', cf, sources: rt.sources, evidence, waveExaminedIds: [...(rt.waveExaminedIds || [])], logs: logs.slice() }); }
+      const resumePastSupplement = !!resumeFrom && resumeFrom.stage === 'supplemented';
+      if (!resumePastSupplement && pipeline.shouldSupplementEvidence(evidence, rt.sources)) {
         const added = await pipeline.supplementalDiscovery(cf, rt, evidence);
         if (added > 0) {
           setRunning((r) => (r ? { ...r, stageIndex: 2, sources: [...rt.sources] } : r));
@@ -519,6 +562,9 @@ export function App(): React.ReactElement {
           setRunning((r) => (r ? { ...r, stageIndex: 3 } : r));
         }
       }
+      // v3.6 快照：对质全部完成——中断后直接宣判（不再调任何检索/转录）
+      { const { saveTrialSnapshot } = await import('../store/trialSnapshot');
+        saveTrialSnapshot({ version: 1, savedAt: new Date().toISOString(), stage: 'supplemented', cf, sources: rt.sources, evidence, waveExaminedIds: [...(rt.waveExaminedIds || [])], logs: logs.slice() }); }
       // 对质证据先完整落位，再进入异议演出；宣判阶段只在演出结束后点亮。
       setRunning((r) => (r ? { ...r, stageIndex: 3, evidence } : r));
 
@@ -571,6 +617,8 @@ export function App(): React.ReactElement {
       setVerdictDoc(doc);
       const { saveToArchive } = await import('../store/local');
       saveToArchive(doc);
+      // v3.6 快照：庭审完整收官——清除中断快照（归档已留存完整判决书）
+      { const { clearTrialSnapshot } = await import('../store/trialSnapshot'); clearTrialSnapshot(); }
     } catch (e: any) {
       if (String(e?.message) === '__MENTAL_HYGIENE__') {
         setRunning(null);
@@ -670,6 +718,19 @@ function Courtroom(props: {
   const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef } = props;
   const [exporting, setExporting] = useState(false);
 
+  // v3.6 中断快照检测：挂载时查一次，提示可续跑（与当前输入框内容无关的旧案也提示）
+  const [snapshotHint, setSnapshotHint] = useState<{ savedAt: string; stage: string; targetTitle: string } | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    import('../store/trialSnapshot').then(({ loadTrialSnapshot, stageLabelZh }) => {
+      const snap = loadTrialSnapshot();
+      if (alive && snap) {
+        setSnapshotHint({ savedAt: snap.savedAt, stage: stageLabelZh(snap.stage), targetTitle: snap.cf.target.title.slice(0, 60) });
+      }
+    }).catch(() => { /* 不可用即不提示 */ });
+    return () => { alive = false; };
+  }, []);
+
   const exportHtml = useCallback(async () => {
     if (!verdictDoc) return;
     setExporting(true);
@@ -727,6 +788,18 @@ function Courtroom(props: {
           <h2 className="panel-title">材料提交</h2>
           <span className="status-chip">{running ? '材料已入卷' : '等待立案'}</span>
         </div>
+        {!running && snapshotHint && (
+          <div className="key-warn" style={{ borderColor: 'var(--gold)', background: '#faf3e3' }}>
+            <strong>检测到未完成的庭审</strong>——「{snapshotHint.targetTitle}」（{snapshotHint.stage}，{new Date(snapshotHint.savedAt).toLocaleString('zh-CN', { hour12: false })}中断）。
+            在输入框重新粘贴<strong>同一链接或正文</strong>后点「开庭查证」，将自动从断点续跑，已完成阶段不重复消耗额度。
+            <button
+              type="button"
+              className="btn"
+              style={{ marginLeft: 10, padding: '2px 10px', fontSize: 12 }}
+              onClick={() => { import('../store/trialSnapshot').then(({ clearTrialSnapshot }) => clearTrialSnapshot()); setSnapshotHint(null); }}
+            >放弃该快照</button>
+          </div>
+        )}
         {running ? (
           <div className="case-summary">
             <span>当前材料</span>
