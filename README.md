@@ -4,8 +4,6 @@
 
 # ⚖️ 卫生法庭 · HEALTH COURT\*
 
-### **把社区的怀疑，整理成可以阅读、质疑和复核的公开案卷**
-
 **来源核查** · **证据展示** · **程序抗辩** · **公开复核**
 
 [![在线使用](https://img.shields.io/badge/OPEN-HEALTH_COURT-C7352D?style=for-the-badge)](https://ren1003497048-del.github.io/health-court/)
