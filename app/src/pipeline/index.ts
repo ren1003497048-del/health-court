@@ -231,38 +231,67 @@ export async function investigation(cf: CaseFile, rt: CourtRuntime, opts?: Inves
     cf.declaredCitations = [];
   }
 
-  rt.log('侦查', '书记员整理案情画像…');
-  const profile = await chatJson<any>(rt.provider.chat, PROFILE_SYSTEM, `目标文本：\n${text}`);
-  cf.profile = {
-    topicDomain: String(profile.topicDomain || ''),
-    mediaType: (['podcast', 'fiction', 'article', 'unknown'].includes(profile.mediaType) ? profile.mediaType : 'unknown') as any,
-    coreClaims: (profile.coreClaims || []).map(String).slice(0, 10),
-    outline: (profile.outline || []).map(String).slice(0, 15),
-    entities: (profile.entities || []).map(String).slice(0, 25),
-    toneSignals: (profile.toneSignals || []).map(String).slice(0, 10),
-    summaryZh: String(profile.summaryZh || ''),
-  };
-  rt.log('侦查', `画像完成：${cf.profile.topicDomain}；指纹鉴定官提取指纹候选…`);
-
-  // v2.2.7 指纹提取分段全覆盖：长转录稿（如 22803 字符的 324 期）只看前 14000 会漏掉
-  // 后半段的最强指纹（142/31/43/55 佐治亚数据段在第 15547 字符处——AA3F00 案教训）
+  rt.log('侦查', '书记员整理案情画像 + 指纹鉴定官分段提取（并行）…');
+  // v3.8 P0-3: 画像与指纹提取并行——原串行 4 次 LLM（画像1+指纹3段）约 6 分钟，
+  // 2 路 worker 并发后 ~3 分钟。指纹段间无依赖（分段独立），画像与指纹无依赖。
   const full = cf.target.text;
   const CHUNK = 12000;
   const nChunks = Math.max(1, Math.ceil(full.length / CHUNK));
-  const fpParts: any[] = [];
-  for (let ci = 0; ci < Math.min(nChunks, 3); ci++) {
-    const segText = full.slice(ci * CHUNK, (ci + 1) * CHUNK);
+  const profilePromise = (async () => {
     try {
-      const fp = await chatJson<any>(
-        rt.provider.chat,
-        FINGERPRINT_SYSTEM,
-        `目标文本（第 ${ci + 1}/${Math.min(nChunks, 3)} 段）：\n${segText}`,
-      );
-      fpParts.push(...((fp.fingerprints || []) as any[]));
-    } catch (e: any) {
-      rt.log('侦查', `第 ${ci + 1} 段指纹提取失败（${e.message.slice(0, 50)}），跳过该段`);
+      return await chatJson<any>(rt.provider.chat, PROFILE_SYSTEM, `目标文本：\n${text}`);
+    } catch {
+      return null; // 画像失败降级（原行为：单点失败即全案挂——容错收口）
     }
-  }
+  })();
+  const fpSegPromise = (ci: number) =>
+    (async () => {
+      const segText = full.slice(ci * CHUNK, (ci + 1) * CHUNK);
+      try {
+        const fp = await chatJson<any>(
+          rt.provider.chat,
+          FINGERPRINT_SYSTEM,
+          `目标文本（第 ${ci + 1}/${Math.min(nChunks, 3)} 段）：\n${segText}`,
+        );
+        return (fp.fingerprints || []) as any[];
+      } catch (e: any) {
+        rt.log('侦查', `第 ${ci + 1} 段指纹提取失败（${e.message.slice(0, 50)}），跳过该段`);
+        return [] as any[];
+      }
+    })();
+  const fpJobs: Promise<any[]>[] = [];
+  const lane = 2;
+  let slot = Promise.resolve();
+  const lanes: Promise<void>[] = [];
+  // 简单 2 路队列：段任务交错入两条 lane（每 lane 内串行，lane 间并行）
+  const segIdx = Array.from({ length: Math.min(nChunks, 3) }, (_, k) => k);
+  const queue = [...segIdx];
+  const runLane = async () => {
+    while (queue.length) {
+      const ci = queue.shift()!;
+      const parts = await fpSegPromise(ci);
+      fpJobsPush(parts);
+    }
+  };
+  const fpParts: any[] = [];
+  const fpJobsPush = (parts: any[]) => fpParts.push(...parts);
+  lanes.push(runLane());
+  lanes.push(runLane());
+  const profile = await profilePromise;
+  await Promise.all(lanes);
+  cf.profile = profile
+    ? {
+        topicDomain: String(profile.topicDomain || ''),
+        mediaType: (['podcast', 'fiction', 'article', 'unknown'].includes(profile.mediaType) ? profile.mediaType : 'unknown') as any,
+        coreClaims: (profile.coreClaims || []).map(String).slice(0, 10),
+        outline: (profile.outline || []).map(String).slice(0, 15),
+        entities: (profile.entities || []).map(String).slice(0, 25),
+        toneSignals: (profile.toneSignals || []).map(String).slice(0, 10),
+        summaryZh: String(profile.summaryZh || ''),
+      }
+    : { topicDomain: '', mediaType: 'unknown', coreClaims: [], outline: [], entities: [], toneSignals: [], summaryZh: '' };
+  rt.log('侦查', `画像完成：${cf.profile.topicDomain || '（降级）'}；指纹鉴定官提取指纹候选（并行 ${fpParts.length} 个）…`);
+
   const fp = { fingerprints: fpParts };
   cf.fingerprints = ((fp.fingerprints || []) as any[])
     .slice(0, 14)
@@ -510,10 +539,30 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
   const candidates: { doc: { title: string; url: string; snippet: string; date?: string }; via: string }[] = [];
   const mirrorNotes: string[] = [];
   const rejected: { title: string; reason: string }[] = [];
-  for (const { tag, q: query } of queries) {
-    try {
-      const { docs } = await rt.provider.search(query);
-      for (const d of docs) {
+  // v3.8 P0-7: 检索轮次 2 路并发（R0-R6 串行 3-5 分钟 → ~2 分钟）。
+  // 候选顺序稳定性：结果按原查询序合并（先收集后入池，seen 去重在合并时进行）。
+  {
+    const searchResults: { docs: { title: string; url: string; snippet: string; date?: string }[]; tag: string; ok: boolean; q?: string }[] = new Array(queries.length);
+    let qi = 0;
+    const searchWorker = async () => {
+      while (true) {
+        const my = qi++;
+        if (my >= queries.length) return;
+        const { tag, q: query } = queries[my];
+        try {
+          const { docs } = await rt.provider.search(query);
+          searchResults[my] = { docs, tag, ok: true, q: query };
+          rt.log('检索', `[${tag}] "${query.slice(0, 50)}" → ${docs.length} 条`);
+        } catch (e: any) {
+          searchResults[my] = { docs: [], tag, ok: false };
+          rt.log('检索', `[${tag}] 失败：${String(e?.message || e).slice(0, 80)}`);
+        }
+      }
+    };
+    await Promise.all([searchWorker(), searchWorker()]);
+    for (const r of searchResults) {
+      if (!r || !r.ok) continue;
+      for (const d of r.docs) {
         if (!seen.has(d.url)) {
           // ?i= 相同（无论哪个店面/域名）→ 同一单集，只留首个
           const epId = (d.url.match(/[?&]i=(\d+)/) || [])[1];
@@ -522,15 +571,12 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
             seenEpId.add(epId);
           }
           seen.add(d.url);
-          candidates.push({ doc: d, via: `${tag}：${query}` });
+          candidates.push({ doc: d, via: `${r.tag}：${r.q || ''}` });
         }
       }
-      rt.log('检索', `[${tag}] "${query.slice(0, 50)}" → ${docs.length} 条`);
-    } catch (e: any) {
-      rt.log('检索', `[${tag}] 失败：${e.message.slice(0, 80)}`);
     }
   }
-  rt.log('检索', `共获不重复候选 ${candidates.length} 个，进入过滤与评分…`);
+  rt.log('检索', `共获不重复候选 ${candidates.length} 个（${queries.length} 个查询·2 路并发），进入过滤与评分…`);
 
   // —— v2.2.9 R6 争议报道单列（不参与对质——报道不是被抄对象，但作为外界指控呈堂）——
   const controversyNotes: { title: string; url: string; snippet?: string }[] = [];
@@ -1035,13 +1081,15 @@ export async function crossExamination(
     .join('\n');
 
   // 分段策略：源全文 >24K 时按 12K 分段（滑窗 1K 防边界切断引文），每段独立送检
-  const SRC_SEG = 12000;
+  const SRC_SEG = 16000; // v3.8 P0-2: 12K→16K
   const segmentsOf = (s: SourceDoc): { label: string; text: string }[] => {
     const ft = s.fullText || '';
     if (!ft) return [{ label: s.id, text: '(无全文，仅有摘要：' + (s.snippet || '') + ')' }];
-    if (ft.length <= SRC_SEG * 2) return [{ label: s.id, text: truncateSmart(ft, 12000) }];
+    // v3.8 P0-2: 分段 12K→16K、段数 6→4——预筛通过的源都是高相关（低分已跳过），
+    // 更大段减少调用次数（glm-5.2 上下文 200K，16K 段余量充足）；4 段×2路并发实测更快
+    if (ft.length <= SRC_SEG * 2) return [{ label: s.id, text: truncateSmart(ft, 16000) }];
     const segs: { label: string; text: string }[] = [];
-    for (let i = 0, si = 1; i < ft.length && si <= 6; i += SRC_SEG - 1000, si++) {
+    for (let i = 0, si = 1; i < ft.length && si <= 4; i += SRC_SEG - 1000, si++) {
       segs.push({ label: `${s.id}#${si}`, text: ft.slice(i, i + SRC_SEG) });
     }
     return segs;
@@ -1197,6 +1245,7 @@ export async function crossExamination(
       ? 'You are an evidence examiner for LITERARY texts distinguishing genuine copying from innocent overlap. Given a target quote (Chinese fiction) and a source quote, classify: expression_copy = the two share SPECIFIC literary formulation unique to the source (same idiosyncratic image, same unusual name/place, same sentence-level phrasing, same narrative detail sequence) - something an independent writer would NOT coincidentally produce; fact_relay = both reference the same public fact/work/allusion in their own words; generic_overlap = both use a common literary trope or theme (reunion, nostalgia, a peach garden as beauty) without specific shared details; inconclusive = cannot tell. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"}'
       : 'You are an evidence examiner distinguishing genuine expression copying from innocent overlap. Given a target quote (Chinese podcast transcript) and a source quote, classify: expression_copy = the two share SPECIFIC formulation unique to the source (same rare case detail, same data combination, same idiosyncratic phrasing, same error) - something a person writing independently about the topic would NOT produce; fact_relay = both state the same historical/public fact in their own words (dates, events, textbook knowledge); generic_overlap = both discuss the same theme at a macro level without specific shared details; inconclusive = cannot tell. NEWS DISCIPLINE: when target and source cover the same recent public event, shared date, person, event/document name, official quote or headline fact MUST be fact_relay unless they also share uncommon prose, a non-public detail combination, or the same error. Multiple independent news reports repeating the elements is evidence of publicness, not expression copying. Output only JSON: {"verdict":"expression_copy|fact_relay|generic_overlap|inconclusive","note":"one-sentence reason in simplified Chinese"} ARCHIVAL DISCIPLINE: archival or niche primary-source details (a specific 1868 newspaper incitement, a named obscure figure\'s anecdote, a specific statistic combination like 142 incidents / 31 killings / 43 shootings tied to a particular time/place) are NOT public textbook facts - relaying the same archival detail combination in the same context IS expression_copy, because an independent writer would not surface the same archival item. Rule of thumb: if the shared material would require reading THIS source (or its chain) to reproduce, classify expression_copy.';
   const srcOf = (sid?: string) => rt.sources.find((s) => s.id === sid);
+  const examQueue: EvidenceItem[] = []; // v3.8 P0-6: 需 LLM 检定的证据队列（循环内收集，循环后 2 路并发执行）
   for (const ev of evidence) {
     if (ev.level !== 'E3' && ev.level !== 'E2') continue; // E4（错误传播）本身就是 expression_copy 铁证，免检
     if (ev.examVerdict) continue; // v3.5 增量对质：已检定过的旧证据不重复检定
@@ -1234,6 +1283,11 @@ export async function crossExamination(
       }
       continue;
     }
+    examQueue.push(ev);
+    continue;
+  }
+  /* 原检定串行实现（v3.8 P0-6 并发化后弃用）：
+  旧循环体如下（仅存档）：
     try {
       const ex = await chatJson<any>(
         rt.provider.chat,
@@ -1254,6 +1308,42 @@ export async function crossExamination(
       ev.examVerdict = 'inconclusive';
       rt.log('对质', `证据检定失败（${e.message.slice(0, 60)}），按无法判定处理`);
     }
+  }
+  检定串行实现至此（for 闭合已上提） */
+
+  // v3.8 P0-6: 检定 2 路并发——原逐条串行（XIUM8Z 14 条证据 ≈ 14×20s ≈ 4.7 分钟）
+  {
+    const runExam = async (ev: EvidenceItem) => {
+      try {
+        const ex = await chatJson<any>(
+          rt.provider.chat,
+          EXAM_SYSTEM,
+          `目标引文（中文转录稿）：\n${ev.targetQuote || '（无）'}\n\n源引文：\n${ev.sourceQuote || '（无）'}\n\n源上下文（节选）：\n${truncateSmart(srcOf(ev.sourceId)?.fullText || '', 2000)}`,
+          { maxTokens: 300 },
+        );
+        const v4 = ['expression_copy', 'fact_relay', 'generic_overlap', 'inconclusive'].includes(ex.verdict) ? ex.verdict : 'inconclusive';
+        ev.examVerdict = v4 as any;
+        ev.examNote = String(ex.note || '');
+        if (ev.level === 'E3' && v4 !== 'expression_copy') {
+          ev.detail = { ...(ev.detail || {}), demoted: true, demotedFrom: 'E3' };
+          rt.log('对质', `证据检定：${ev.id} 属「${v4 === 'fact_relay' ? '事实转述' : v4 === 'generic_overlap' ? '宏观表达重合' : '无法判定'}」，降为线索级——${ev.examNote.slice(0, 60)}`);
+        } else {
+          rt.log('对质', `证据检定：${ev.id} 属「${v4 === 'expression_copy' ? '独特表达复制' : v4 === 'fact_relay' ? '事实转述' : v4 === 'generic_overlap' ? '宏观表达重合' : '无法判定'}」——${ev.examNote.slice(0, 60)}`);
+        }
+      } catch (e: any) {
+        ev.examVerdict = 'inconclusive';
+        rt.log('对质', `证据检定失败（${e.message.slice(0, 60)}），按无法判定处理`);
+      }
+    };
+    let idx = 0;
+    const worker = async () => {
+      while (true) {
+        const i = idx++;
+        if (i >= examQueue.length) return;
+        await runExam(examQueue[i]);
+      }
+    };
+    await Promise.all([worker(), worker()]);
   }
 
   // v2.2.11 转述生成（仿 podcastreview 社区形态）：每条 E3/E4 证据产人话标题+第三人称转述对。

@@ -258,7 +258,10 @@ export function App(): React.ReactElement {
       }
       // 2026-08-22 N8CGYU 案（54分钟超时根因之一）：首块闸门——先转第 1 块，
       // 与目标指纹英文词做词面相关度检查，不相关即中止（预算留给下一源）。
-      const targetEn = ((cf as any).fingerprints || []).flatMap((f: any) => f.searchKeywordsEn || []).join(' ').slice(0, 400);
+      // v3.8 P0-5: 指纹全失败时用画像英文实体兜底（N8CGYU 形态：指纹0→闸门永不触发→全量转录空转）
+      const fpEn = ((cf as any).fingerprints || []).flatMap((f: any) => f.searchKeywordsEn || []).join(' ');
+      const entEn = ((cf as any).profile?.entities || []).filter((x: string) => /[A-Za-z]{4,}/.test(x)).join(' ');
+      const targetEn = (fpEn || entEn).slice(0, 400);
       const first = await transcribeAudioUrl(
         located.audio.audioUrl,
         { kind: asrKind, apiKey: asrKey },

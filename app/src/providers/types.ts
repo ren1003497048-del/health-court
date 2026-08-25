@@ -67,15 +67,16 @@ export async function chatJson<T>(
     );
     return extractJson(r.content);
   };
+  // v3.8 P0-1: 首试即禁思考——JSON 场景思考模式零收益（烧 max_tokens + 超时），
+  // 原「先思考再禁」的首试注定失败一次（XIUM8Z 指纹验证 10.3 分钟约 1/3 是注定重试）。
+  // 兼容：不识别 thinking 参数的端点忽略该字段，无害。
   try {
-    return await attempt(false, false);
+    return await attempt(false, true);
   } catch {
-    // 2026-08-22 N8CGYU 案根因：思考模型（glm-5.2 coding 端点）把 max_tokens 全烧在
-    // reasoning_content 上，content 为空 → JSON 解析失败。重试时禁用思考。
     try {
       return await attempt(true, true);
     } catch {
-      return await attempt(true, false); // 最后一次：只加严指令不禁思考（兼容不支持开关的端点）
+      return await attempt(true, false);
     }
   }
 }
