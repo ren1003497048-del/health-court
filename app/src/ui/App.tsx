@@ -539,6 +539,17 @@ export function App(): React.ReactElement {
       setRunning((r) => (r ? { ...r, stageIndex: 4, objection: null, shake: false } : r));
 
       const doc = await pipeline.verdictStage(cf, rt, evidence);
+
+      // v3.9 附录·延伸阅读：宣判后、归档前生成（与裁决解耦的荐读清单）。
+      // 失败不阻塞判决书——catch 内静默，附录缺省为空。
+      try {
+        const { buildAppendix } = await import('../court/appendixPipeline');
+        doc.appendix = await buildAppendix(cf, rt);
+        if (doc.appendix.items.length > 0) {
+          pushLog('宣判', `附录·延伸阅读整理完成：${doc.appendix.items.length} 份材料`);
+        }
+      } catch { /* 附录失败不影响判决 */ }
+
       setVerdictDoc(doc);
       const { saveToArchive } = await import('../store/local');
       saveToArchive(doc);
@@ -1237,6 +1248,29 @@ function VerdictView(props: {
 
         {onNextCase && (
           <p className="next-case-hint">{nextCaseHint || '判决书已自动存入「判例集」；点击「开启下一案」将清空当前输入并回到立案页，无需手动刷新页面。'}</p>
+        )}
+
+        {(doc as any).appendix?.items?.length > 0 && (
+          <section className="appendix-reading">
+            <header className="appendix-head">
+              <span className="appendix-eyebrow">附录</span>
+              <h3 className="appendix-title">延伸阅读</h3>
+              <p className="appendix-intro">{(doc as any).appendix.intro}</p>
+            </header>
+            <ol className="appendix-list">
+              {(doc as any).appendix.items.map((it: any, i: number) => (
+                <li key={it.sourceId || i} className="appendix-item">
+                  <div className="appendix-item-head">
+                    <span className="appendix-ordinal">{String(i + 1).padStart(2, '0')}</span>
+                    <a href={it.url} target="_blank" rel="noreferrer">{it.title} ↗</a>
+                    <span className="appendix-tier">{it.tier}</span>
+                    <span className="appendix-form">{it.form}</span>
+                  </div>
+                  <p className="appendix-note">{it.note}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
         )}
 
         <div className="footnote-box" style={{ marginTop: 16 }}>

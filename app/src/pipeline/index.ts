@@ -1788,6 +1788,8 @@ export interface VerdictDoc {
   namingFootnote: string;
   generatedAt: string;
   limits: string[];
+  /** v3.9 附录·延伸阅读：与裁决解耦的荐读清单（休庭/材料不足时为空或不出现） */
+  appendix?: { kind: 'appendix_reading'; intro: string; items: { sourceId: string; title: string; url: string; tier: string; form: string; note: string }[] };
 }
 
 export function buildVerdictDoc(
