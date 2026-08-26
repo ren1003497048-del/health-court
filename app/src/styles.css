@@ -718,6 +718,9 @@ h1, h2, h3 { line-height: 1.35; text-wrap: balance; }
 .verdict-document-panel h3 { font-size: 19px; line-height: 1.45; }
 .verdict-actions { display: flex; align-items: center; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
 .summary-toast { font-size: 12.5px; color: #356b43; background: #eef4ec; border: 1px solid #cfe0cf; border-radius: 4px; padding: 5px 10px; }
+.btn-next-case { background: #fbf6ea; border: 1px solid var(--gold, #c4a882); color: #6b5322; }
+.btn-next-case:hover { background: #f6ecd8; }
+.next-case-hint { margin: 10px 0 0; font-size: 12.5px; color: var(--ink-soft, #625d54); line-height: 1.8; }
 
 /* 表格、证物与操作采用同一细线规范 */
 .table-scroll { width: 100%; overflow-x: auto; }

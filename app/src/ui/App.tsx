@@ -145,6 +145,8 @@ export function App(): React.ReactElement {
   const [bodyText, setBodyText] = useState('');
   const [running, setRunning] = useState<RunningState | null>(null);
   const [verdictDoc, setVerdictDoc] = useState<VerdictDoc | null>(null);
+  // v3.8.1 判决书来源标记：从判例集打开的判决书，「下一案」按钮语义切换为「关闭判决书返回判例集」
+  const [tabFromArchive, setTabFromArchive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mentalHygiene, setMentalHygiene] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -552,6 +554,16 @@ export function App(): React.ReactElement {
     }
   }, [input, bodyText, scrollLog]);
 
+  // v3.8.1 开启下一案：清空判决与输入，回到干净的立案状态（判决书已自动归档判例集，无需手动保存）
+  const startNextCase = useCallback(() => {
+    setVerdictDoc(null);
+    setRunning(null);
+    setInput('');
+    setBodyText('');
+    setError(null);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
   return (
     <>
       <header className="court-header">
@@ -598,17 +610,32 @@ export function App(): React.ReactElement {
             setBodyText={setBodyText}
             running={running}
             verdictDoc={verdictDoc}
+            verdictFromArchive={tabFromArchive}
+            closeArchiveVerdict={() => {
+              setVerdictDoc(null);
+              setTabFromArchive(false);
+              setTab('archive');
+            }}
             error={error}
             run={run}
             logRef={logRef}
+            startNextCase={startNextCase}
           />
         )}
         {tab === 'archive' && (
           <Archive
             onOpen={(doc) => {
               setVerdictDoc(doc);
+              setTabFromArchive(true);
               setTab('court');
+              if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
             }}
+            onCloseVerdict={() => {
+              setVerdictDoc(null);
+              setTabFromArchive(false);
+              setTab('archive');
+            }}
+            showingVerdict={tabFromArchive && !!verdictDoc}
           />
         )}
         {tab === 'settings' && <Settings />}
@@ -634,11 +661,14 @@ function Courtroom(props: {
   setBodyText: (s: string) => void;
   running: RunningState | null;
   verdictDoc: VerdictDoc | null;
+  verdictFromArchive: boolean;
+  closeArchiveVerdict: () => void;
   error: string | null;
   run: () => void;
   logRef: React.RefObject<HTMLDivElement>;
+  startNextCase: () => void;
 }): React.ReactElement {
-  const { input, setInput, bodyText, setBodyText, running, verdictDoc, error, run, logRef } = props;
+  const { input, setInput, bodyText, setBodyText, running, verdictDoc, verdictFromArchive, closeArchiveVerdict, error, run, logRef, startNextCase } = props;
   const [exporting, setExporting] = useState(false);
 
   // v3.6 中断快照检测：挂载时查一次，提示可续跑（与当前输入框内容无关的旧案也提示）
@@ -842,6 +872,11 @@ function Courtroom(props: {
           onCopySummary={copySummary}
           summaryToast={summaryToast}
           exporting={exporting}
+          onNextCase={verdictFromArchive ? closeArchiveVerdict : startNextCase}
+          nextCaseLabel={verdictFromArchive ? '关闭判决书，返回判例集' : '开启下一案 ⤒'}
+          nextCaseHint={verdictFromArchive
+            ? '这份判决书来自判例集存档。点击上方按钮返回判例集列表。'
+            : '判决书已自动存入「判例集」；点击「开启下一案」将清空当前输入并回到立案页，无需手动刷新页面。'}
         />
       )}
     </>
@@ -859,8 +894,11 @@ function VerdictView(props: {
   onCopySummary: () => void;
   summaryToast: string | null;
   exporting: boolean;
+  onNextCase?: () => void;
+  nextCaseLabel?: string;
+  nextCaseHint?: string;
 }): React.ReactElement {
-  const { doc, onExportHtml, onExportJson, onCopySummary, summaryToast, exporting } = props;
+  const { doc, onExportHtml, onExportJson, onCopySummary, summaryToast, exporting, onNextCase, nextCaseLabel, nextCaseHint } = props;
   const v = doc.verdict;
   const courtEvidence = useMemo(() => normalizeEvidenceForSources(doc.evidence, doc.sources), [doc.evidence, doc.sources]);
   const admittedCount = courtEvidence.filter(isAdmissibleEvidence).length;
@@ -1187,10 +1225,19 @@ function VerdictView(props: {
           <button className="btn btn-ghost" onClick={onCopySummary}>
             复制核查摘要
           </button>
+          {onNextCase && (
+            <button className="btn btn-next-case" onClick={onNextCase}>
+              {nextCaseLabel || '开启下一案 ⤒'}
+            </button>
+          )}
           {summaryToast && (
             <span className="summary-toast" role="status">{summaryToast}</span>
           )}
         </div>
+
+        {onNextCase && (
+          <p className="next-case-hint">{nextCaseHint || '判决书已自动存入「判例集」；点击「开启下一案」将清空当前输入并回到立案页，无需手动刷新页面。'}</p>
+        )}
 
         <div className="footnote-box" style={{ marginTop: 16 }}>
           {doc.disclaimer}
@@ -1204,17 +1251,25 @@ function VerdictView(props: {
 // 判例集
 // ---------------------------------------------------------------------------
 
-function Archive({ onOpen }: { onOpen: (doc: VerdictDoc) => void }): React.ReactElement {
+function Archive({ onOpen, onCloseVerdict, showingVerdict }: { onOpen: (doc: VerdictDoc) => void; onCloseVerdict: () => void; showingVerdict: boolean }): React.ReactElement {
   const [metas, setMetas] = useState<ReturnType<typeof import('../store/local').loadArchiveMetas>>([]);
   React.useEffect(() => {
     import('../store/local').then((m) => setMetas(m.loadArchiveMetas()));
   }, []);
+  // v3.8.1 判例判决书被顶到开庭页展示时，在判例集顶部给出「关闭判决书」出口（与庭审判决书的「开启下一案」对称）
+  const banner = showingVerdict ? (
+    <div className="key-warn" style={{ borderColor: 'var(--gold)', background: '#faf3e3', marginBottom: 14 }}>
+      <strong>正在查看判例判决书</strong>——展示在「开庭」页。读完可点此返回判例集：
+      <button type="button" className="btn" style={{ marginLeft: 10, padding: '2px 10px', fontSize: 12 }} onClick={onCloseVerdict}>关闭判决书，返回判例集</button>
+    </div>
+  ) : null;
   return (
       <section className="panel court-sheet archive-panel">
         <div className="panel-heading-row">
           <h2 className="panel-title">判例集</h2>
           <span className="status-chip">本机存档 · {metas.length} 件</span>
         </div>
+        {banner}
         <p className="page-intro">每次宣判后，案卷会保存在当前浏览器。你可以查看全卷、导出判决书，或删除不再需要的记录。</p>
         {metas.length === 0 ? (
           <div className="empty-docket">
