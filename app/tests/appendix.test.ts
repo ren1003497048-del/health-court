@@ -83,3 +83,12 @@ describe('荐读语纪律', () => {
     expect(formOf(mk('W', { title: '三K党', url: 'https://zh.wikipedia.org/x' }))).toContain('中文');
   });
 });
+
+describe('v3.9.1 去雷同提示词', () => {
+  it('包含开场错开/细节切入/套话限一次三要素', () => {
+    expect(APPENDIX_NOTE_SYSTEM).toContain('禁用「这是XX关于XX的条目/节目」句式');
+    expect(APPENDIX_NOTE_SYSTEM).toContain('同卷不得重复同一招');
+    expect(APPENDIX_NOTE_SYSTEM).toContain('至多出现一次');
+    expect(APPENDIX_NOTE_SYSTEM).toContain('独有细节');
+  });
+});

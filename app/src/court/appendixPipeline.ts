@@ -40,6 +40,9 @@ export async function buildAppendix(
 
   const topic = String(cf.profile?.summaryZh || cf.target?.title || '').slice(0, 120);
   const items: AppendixItem[] = [];
+  // v3.9.1 去雷同：把已写卡片的首句与结尾句注入后续调用，LLM 据此真正错开写法
+  const writtenOpenings: string[] = [];
+  const writtenEndings: string[] = [];
   for (const src of picked) {
     const base = {
       sourceId: String(src.id),
@@ -52,13 +55,21 @@ export async function buildAppendix(
     try {
       const excerpt = String(src.fullText || '').replace(/\s+/g, ' ').slice(0, 3000);
       const ai = String((src as any).aiSummary || '').slice(0, 500);
+      const priorCtx = writtenOpenings.length
+        ? `\n\n【同卷其他卡片已用的开场（你的开场必须与之明显不同）】\n${writtenOpenings.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n【同卷其他卡片已用的结尾（你的结尾句式必须与之不同）】\n${writtenEndings.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+        : '';
       const out = await chatJson<any>(
         rt.provider.chat,
         APPENDIX_NOTE_SYSTEM,
-        `案件主题：${topic}\n\n材料标题：${base.title}\n材料链接：${base.url}\n已有摘要：${ai || '（无）'}\n材料正文节选：\n${excerpt || '（正文未取得——只依据标题与已有摘要写，不确定的内容不要写）'}`,
+        `案件主题：${topic}\n\n材料标题：${base.title}\n材料链接：${base.url}\n已有摘要：${ai || '（无）'}\n材料正文节选：\n${excerpt || '（正文未取得——只依据标题与已有摘要写，不确定的内容不要写）'}${priorCtx}`,
         { maxTokens: 1200 },
       );
       note = normalizeAppendixNote(out);
+      if (note) {
+        const sents = note.split(/[。！？]/).filter(Boolean);
+        writtenOpenings.push(sents[0]?.slice(0, 40) || '');
+        writtenEndings.push(sents[sents.length - 1]?.slice(0, 40) || '');
+      }
     } catch {
       note = '';
     }

@@ -55,6 +55,8 @@ export interface CourtRuntime {
   searchAudit?: { rounds: number; queries: number; supplementalQueries: number; supplementalSources: number };
   /** v3.5 波次对质登记簿：已过堂源 id（跨波共享，第 3 波增量判定依据） */
   waveExaminedIds?: Set<string>;
+  /** v3.9.1 检索通道疑似失灵标记（空结果占比≥60% 时写入，判决书 limits 必须披露） */
+  searchChannelDegraded?: { total: number; zero: number; ratio: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +562,17 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       }
     };
     await Promise.all([searchWorker(), searchWorker()]);
+    // v3.9.1 检索通道防御（DBEE2E 案教训：31 查询 20+ 条 0 结果，搜索 API 静默失灵，
+    // 用户误以为「内容查不出来」而非「通道坏了」）：空结果占比过高时显式告警并写 limits。
+    {
+      const okResults = searchResults.filter((r) => r && r.ok);
+      const zeroResults = okResults.filter((r) => (r.docs || []).length === 0);
+      const zeroRatio = okResults.length > 0 ? zeroResults.length / okResults.length : 0;
+      if (okResults.length >= 8 && zeroRatio >= 0.6) {
+        rt.log('检索', `⚠ 检索通道疑似失灵：${okResults.length} 条查询中 ${zeroResults.length} 条返回 0 结果（${Math.round(zeroRatio * 100)}%）——请检查搜索 Key/配额或更换搜索通道（设置 → 搜索取证），否则本次核查结果不可作数`);
+        rt.searchChannelDegraded = { total: okResults.length, zero: zeroResults.length, ratio: Math.round(zeroRatio * 100) };
+      }
+    }
     for (const r of searchResults) {
       if (!r || !r.ok) continue;
       for (const d of r.docs) {
@@ -577,6 +590,7 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     }
   }
   rt.log('检索', `共获不重复候选 ${candidates.length} 个（${queries.length} 个查询·2 路并发），进入过滤与评分…`);
+
 
   // —— v2.2.9 R6 争议报道单列（不参与对质——报道不是被抄对象，但作为外界指控呈堂）——
   const controversyNotes: { title: string; url: string; snippet?: string }[] = [];
@@ -685,7 +699,8 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
     }
     const parkHit = SOURCE_QUALITY_GATE.parkDomainWords.some((w) => (fullText + title).toLowerCase().includes(w.toLowerCase()));
     // v2.2.6 搜索错误页/空结果页（K5B292 教训：'Try searching for it instead' 4088字符过闸占了相似度90席位）
-    const junkTitle = /try searching|no results|page not found|not found|404|search results for|nothing matched/i.test(title);
+    // v3.9.1 扩充：page cannot be found（DBEE2E 案 SRC12 实测入卷）
+    const junkTitle = /try searching|no results|page not found|page cannot be found|cannot be found|not found|404|403|forbidden|search results for|nothing matched|error\b|access denied/i.test(title);
     if (junkTitle) {
       rejected.push({ title, reason: '搜索错误/空结果页' });
       rt.log('检索', `候选源被质量闸门拦截（搜索错误页）：${title.slice(0, 40)}`);
@@ -701,6 +716,12 @@ export async function discovery(cf: CaseFile, rt: CourtRuntime, opts?: { maxSour
       continue;
     }
     const srcDate = c.doc.date ? Date.parse(c.doc.date) : NaN;
+    // v3.9.1 入卷垃圾防御（DBEE2E 案：以巴冲突维基页 sim=6-8 也占了入卷席位）：相似度 <15 的候选
+    // 与本案主题几乎无关，徒增对质开销与噪声——不入卷（检索通道失灵时低分源成批出现）。
+    if (typeof r?.sim === 'number' && r.sim < 15) {
+      rejected.push({ title: c.doc.title, reason: `相似度过低（${r.sim}），与被检主题无关` });
+      continue;
+    }
     fetched.push({
       id: 'SRC' + (fetched.length + 1),
       title,
@@ -798,6 +819,10 @@ async function verifySourceRelations(cf: CaseFile, rt: CourtRuntime, sources: So
       { maxTokens: 2400 },
     );
     const checked = Array.isArray(result.checked) ? result.checked : [];
+    // v3.9.1 百科身份防御（DBEE2E 案：维基百科被标 direct_source 污染波次排序与「相似度前三」呈现）：
+    // 通用百科/通史域是背景材料，无论 LLM 怎么判，一律不得标 direct_source——文化文本核查的对象是
+    // 著作/播客/文章等具体创作物，百科条目只能是 same_topic 背景。确定性规则优先于 LLM 判断。
+    const ENCYCLOPEDIA_DOMAINS = /wikipedia\.org|britannica\.com|history\.com|baike\.baidu\.com|zh\.wikipedia|dbpedia\.org|wikiwand\.com|smarthistory|khanacademy/i;
     const resolved = new Set<number>();
     for (const item of checked) {
       const index = Number(item.idx);
@@ -805,7 +830,14 @@ async function verifySourceRelations(cf: CaseFile, rt: CourtRuntime, sources: So
       if (!source) continue;
       resolved.add(index);
       const relation = String(item.relation || 'unknown');
-      source.subjectRelation = (['direct_source', 'same_event', 'same_topic', 'unrelated', 'unknown'].includes(relation) ? relation : 'unknown') as SourceDoc['subjectRelation'];
+      let final: string = ['direct_source', 'same_event', 'same_topic', 'unrelated', 'unknown'].includes(relation) ? relation : 'unknown';
+      if (final === 'direct_source' && ENCYCLOPEDIA_DOMAINS.test(String(source.url || ''))) {
+        final = 'same_topic';
+        source.subjectRelation = final as SourceDoc['subjectRelation'];
+        source.subjectRelationNote = `二次核验判 direct_source，但百科/通史域按规则强制降为同题材（背景材料不构成「直接来源候选」）；LLM 理由：${String(item.note || '').slice(0, 100)}`;
+        continue;
+      }
+      source.subjectRelation = final as SourceDoc['subjectRelation'];
       source.subjectRelationNote = `二次核验：${String(item.note || '').slice(0, 180)}`;
     }
     candidates.forEach((source, index) => {
@@ -1825,6 +1857,10 @@ export function buildVerdictDoc(
   limits.push(`指纹候选 ${cf.fingerprints.length} 个，检索候选源 ${rt.sources.length} 个（相似度排序，满分 100）；「未发现」不等于「证明清白」`);
   if (rt.searchAudit) {
     limits.push(`本案完成 ${rt.searchAudit.rounds} 轮、${rt.searchAudit.queries} 条检索式；补充取证新增 ${rt.searchAudit.supplementalSources} 个候选源。检索相关分只用于排序，不代表证据强度`);
+  }
+  // v3.9.1 检索通道失灵披露（DBEE2E 案）：空结果占比过高时判决书必须声明结果不可作数
+  if (rt.searchChannelDegraded) {
+    limits.push(`⚠ 检索通道疑似失灵：${rt.searchChannelDegraded.total} 条查询中 ${rt.searchChannelDegraded.zero} 条返回 0 结果（${rt.searchChannelDegraded.ratio}%）——本案的「未发现对应」很可能源于搜索服务不可用而非内容本身，请检查搜索 Key/配额后重跑，本次结论不可作数`);
   }
   if (rt.rejectedSources?.length) {
     limits.push(`检索淘汰 ${rt.rejectedSources.length} 个候选：${rt.rejectedSources.slice(0, 6).map((r) => `${r.title.slice(0, 24)}（${r.reason}）`).join('；')}${rt.rejectedSources.length > 6 ? ' 等' : ''}`);
