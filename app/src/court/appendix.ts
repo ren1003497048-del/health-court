@@ -86,6 +86,9 @@ export function selectAppendixSources(
   const seenUrl = new Set<string>();
   const pool = sources
     .filter((s) => !excluded(s, targetUrl))
+    // v3.9.2 附录质量门槛（LUV3FV 案教训：通道失灵期 sim=30 的童书插画家作者页混入荐读区）：
+    // 相似度过低 = 与案件主题基本无关的搭车结果，不配代表「本案检索中发现的高价值材料」
+    .filter((s) => (s.similarity ?? 100) >= 50)
     .filter((s) => {
       const u = String(s.url).replace(/\/+$/, '').toLowerCase();
       if (seenUrl.has(u)) return false;

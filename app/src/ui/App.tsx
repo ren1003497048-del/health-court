@@ -338,10 +338,27 @@ export function App(): React.ReactElement {
       }
       const fetcher = createJinaFetcher({ apiKey: s.jinaApiKey || undefined });
       // 搜索通道：Serper 仅使用用户自填 Key；静态站点不携带项目共享密钥。
-      const serper = createSerperSearch({ userApiKey: s.serperApiKey || undefined });
+      const serper = createSerperSearch({ userApiKey: s.serperApiKey?.trim() || undefined });
       const originalSearch = provider.search.bind(provider);
+      // v3.9.2 通道自动降级（LUV3FV 案：Serper 持续 403/429 时整案检索瘫痪）：
+      // SERPER_DEGRADED 错误 → 该查询自动回落主模型内置检索，并在日志留痕一次。
+      let serperFallbackNoted = false;
       provider.search = async (query: string) => {
-        if (s.searchProvider === 'serper') return serper.search(query);
+        if (s.searchProvider === 'serper') {
+          try {
+            return await serper.search(query);
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            if (/^SERPER_DEGRADED/.test(msg)) {
+              if (!serperFallbackNoted) {
+                serperFallbackNoted = true;
+                logSinkRef.current('检索', `⚠ ${msg.split('：')[0]}——搜索已自动回落主模型内置检索；建议稍后到「设置 → 搜索取证」检查 Serper Key`);
+              }
+              return originalSearch(query);
+            }
+            throw e;
+          }
+        }
         return originalSearch(query);
       };
 
