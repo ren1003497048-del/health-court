@@ -1,0 +1,55 @@
+# AGENTS.md — 卫生法庭 AI 协作入口
+
+> **所有 AI Agent（Codex / Claude Code / Hermes / 其他）与人类协作者，动本仓库前先读本文件。**
+> 本文件是仓库内唯一协作规则源；与 Obsidian 协作基点文档冲突时，以时间更新者为准并同步另一处。
+
+## 项目定位
+
+内容抄袭核查法庭：React+TS 前端（GitHub Pages，BYOK 无后端），多智能体庭审管线。
+线上 https://ren1003497048-del.github.io/health-court/ ；部署＝push main → Actions（npm test 不过不上线）。
+战略速记：核心用户=青年文化爱好者；产品=争议的整理场非权威鉴定所；护城河=可复核/一致/透明。改动的裁判标准：让结论更可转述还是更不可转述。
+
+## 目录
+
+```
+app/src/pipeline/   庭审管线（审判长状态机/书记员检索/证据官/裁决）← 机制核心，改动需 Hermes 验收
+app/src/ui/         界面组件
+app/src/providers/  LLM/检索/ASR 通道
+app/tests/          vitest；scripts/e2e-310.ts 端到端
+docs/               PRD
+```
+
+## 分工与并行纪律
+
+- **Codex**：UI＋文档，直推 main。**Hermes**：机制＋验收。**用户**：会在 GitHub 网页直改文档——对照前先 `git fetch`。
+- 与他人同仓并行时，开工前先 `git status`：工作区有对方未提交改动→立即停手，要么等交付，要么文件级零交集才可并行。绝不 stash/提交他人半成品。
+- 交付纪律：用户说「先不提交只本地修改」时，保持未提交直到明说提交；提交前 `git fetch` 确认远端无新推送。
+
+## 不可协商规则（违反=打回）
+
+1. **绝不输出绝对「卫生」**——只有「可能卫生」（小字「请持续关注精神卫生。」）。
+2. 已发表≠原创；检索不穷尽——判决书 limits 必须声明。
+3. 用户可见处零内部代号（E3/E4/FP/SRC → 人话标题）。
+4. 中文区全角标点＋「」引号；英文引文段保留英文标点。
+5. **绝不写入/留存用户 Key 与正文到任何后端**（BYOK 红线；快照功能有测试硬断言）。
+6. 设置页预设不得覆盖用户手填配置（GLM 端点错配案实证：预设 baseUrl 覆盖手填 coding 端点→1113）。
+7. LLM 调用首试即带 `thinking:{type:'disabled'}`（思考模型烧穿 max_tokens→JSON 空输出事故实证）。
+
+## 开发循环（app/ 内）
+
+1. 改代码 → 2. 三件套：`npx tsc --noEmit` ／ `npx vitest run` ／ `npm run build` → 3. push（Windows 侧用 gh.exe credential helper）→ 4. 验证 Actions 绿＋线上 bundle 特征字符串（分包后主 bundle 搜不到管线特征是正常的，先查 index-*.js 分包再下结论）。
+
+## 已知回归高发区（外部 AI 改动后必查）
+
+- 判定链回归：E2 论证链豁免（chainSteps≥3 且置信≥0.85 免引文检定）曾被重构丢失——改 pipeline 后必须回归 tests/criteria-v222.test.ts 全绿。
+- 弹窗/文案代号回流、门槛文案与实际不符（现值：立案门槛 2 组；粘贴下限 100 字）。
+- 关于页表述过度承诺（「全部确定性规则驱动」不实——判词是 LLM）。
+
+## 深度文档指针
+
+- 机制与坑全量：Hermes skill `health-court-dev`（会话内）＋ Obsidian 通用库 `AI工具使用/` 四层文档（产品第一性原理/路线图/框线图/多工具协作基点——**协作基点最新**）。
+- 版本速查：git log（feat/fix 前缀带版本号）；重大判定哲学变更见 commit message 详情。
+
+---
+
+最后更新：2026-08-28（本文件由 Hermes 创建，源自 AI-Native SDLC 制品链实践：仓库为真相源）
